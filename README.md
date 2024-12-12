@@ -1,3 +1,4 @@
+
 # synchronized_recorder
 synchronized recorder for image and kinematic data through ROS
 A ROS node that synchronizes and records images and kinematic data. The synchronized data pairs are saved in organized folders with timestamps as folder names. Each folder contains:
