@@ -100,11 +100,16 @@ cd <repository_directory>
 2. Build package
 Ensure your CMakeLists.txt includes the necessary dependencies (ROS, OpenCV, JsonCpp). If something's missing, you'll know from error msgs during build.
 ```
-catkin_make
+catkin build --summary
 source devel/setup.bash
 ```
 3. Run node
 Ensure that you've started all necessary processes (roscore, stereo camera, lighting if necessary).
+Here'a list of all topics necessary for this node:
+  - stereo camera (start this using the following command: roslaunch dvrk_video decklink_stereo_1280x1024.launch stereo_rig_name:=test). Important: stereo_rig_name must be set to "test"!!!
+  - roscore
+  - dvrk control console turned on (start this using the following command: rosrun dvrk_robot dvrk_console_json -j console-PSM1.json -p 0.001). Important: verify that the dvrk is in the powered on status in the console!
+  - verify there's output kinetic data (use this command: rostopic echo /PSM1/measured_js)
 
 ## How this works
 ### Threads
