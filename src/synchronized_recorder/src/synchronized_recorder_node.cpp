@@ -406,16 +406,21 @@ void reformatDataStorage() {
     int index = 0;
     for (const auto &entry : std::filesystem::directory_iterator("recorded_data")) {
         if (entry.is_directory()) {
-            std::string img_src = entry.path().string() + "/image.png";
+            std::string img_left_src = entry.path().string() + "/image_left.png";
+            std::string img_right_src = entry.path().string() + "/image_right.png";
             std::string kin_src = entry.path().string() + "/kinematics.json";
             std::string time_syn_src = entry.path().string();
 
-            std::string img_dst = base_folder + "/image/" + std::to_string(index) + ".jpg";
+            std::string img_left_dst = base_folder + "/image/" + std::to_string(index) + "_left.png";
+            std::string img_right_dst = base_folder + "/image/" + std::to_string(index) + "_right.png";
             std::string kin_dst = base_folder + "/kinematic/" + std::to_string(index) + ".json";
             std::string time_syn_dst = base_folder + "/time_syn/" + std::to_string(index) + ".json";
 
-            if (std::filesystem::exists(img_src)) {
-                std::filesystem::copy(img_src, img_dst, std::filesystem::copy_options::overwrite_existing);
+            if (std::filesystem::exists(img_left_src)) {
+                std::filesystem::copy(img_left_src, img_left_dst, std::filesystem::copy_options::overwrite_existing);
+            }
+            if (std::filesystem::exists(img_right_src)) {
+                std::filesystem::copy(img_right_src, img_right_dst, std::filesystem::copy_options::overwrite_existing);
             }
             if (std::filesystem::exists(kin_src)) {
                 std::filesystem::copy(kin_src, kin_dst, std::filesystem::copy_options::overwrite_existing);
