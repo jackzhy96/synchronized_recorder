@@ -128,10 +128,13 @@ Here'a full list of all dependencies necessary for this node:
     ```
     Important: verify that the dvrk is in the powered on status in the console!
     
-  - Verify there's output kinetic data, using this command:
+  - Verify there's output kinetic data, using these commands:
     ```
     rostopic echo /PSM1/measured_js
+
+    rostopic echo /PSM2/measured_js
     ```
+    If running measured_js doesn't produce the desired kinematic data output, try fixing this issue by clicking on "Home" button in the control panel.
 
 
 ## How this works
