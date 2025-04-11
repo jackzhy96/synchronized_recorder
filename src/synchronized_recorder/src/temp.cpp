@@ -2,6 +2,7 @@
 #include <image_transport/image_transport.h>
 #include <sensor_msgs/Image.h>
 #include <sensor_msgs/JointState.h>
+#include <geometry_msgs/PoseStamped.h>   // <-- added
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/opencv.hpp>
 
@@ -157,8 +158,10 @@ void parseArguments(int argc, char** argv) {
 struct KinematicData {
     ros::Time stamp;
     std::vector<double> position;
+    std::vector<double> orientation;   // <-- added (only for cp)
     std::vector<double> velocity;
     std::vector<double> effort;
+    bool is_cp = false;                // <-- added
 };
 
 
@@ -321,6 +324,72 @@ void jointStateCallbackECM(const sensor_msgs::JointState::ConstPtr &msg) {
 }
 
 
+// ----------------- new callbacks for measured_cp -----------------
+void cartesianPoseCallback(const geometry_msgs::PoseStamped::ConstPtr &msg) {   // PSM1
+    KinematicData kin_data;
+    kin_data.stamp = msg->header.stamp;
+    kin_data.position = { msg->pose.position.x,
+                          msg->pose.position.y,
+                          msg->pose.position.z };
+    kin_data.orientation = { msg->pose.orientation.x,
+                             msg->pose.orientation.y,
+                             msg->pose.orientation.z,
+                             msg->pose.orientation.w };
+    kin_data.is_cp = true;
+
+    {
+        std::lock_guard<std::mutex> lock(g_data_mutex);
+        if (g_kinematic_buffer.size() > MAX_BUFFER_SIZE) {
+            g_kinematic_buffer.pop();
+        }
+        g_kinematic_buffer.push(kin_data);
+    }
+}
+
+void cartesianPoseCallbackPSM2(const geometry_msgs::PoseStamped::ConstPtr &msg) {
+    KinematicData kin_data;
+    kin_data.stamp = msg->header.stamp;
+    kin_data.position = { msg->pose.position.x,
+                          msg->pose.position.y,
+                          msg->pose.position.z };
+    kin_data.orientation = { msg->pose.orientation.x,
+                             msg->pose.orientation.y,
+                             msg->pose.orientation.z,
+                             msg->pose.orientation.w };
+    kin_data.is_cp = true;
+
+    {
+        std::lock_guard<std::mutex> lock(g_data_mutex);
+        if (g_kinematic_buffer_psm2.size() > MAX_BUFFER_SIZE) {
+            g_kinematic_buffer_psm2.pop();
+        }
+        g_kinematic_buffer_psm2.push(kin_data);
+    }
+}
+
+void cartesianPoseCallbackECM(const geometry_msgs::PoseStamped::ConstPtr &msg) {
+    KinematicData kin_data;
+    kin_data.stamp = msg->header.stamp;
+    kin_data.position = { msg->pose.position.x,
+                          msg->pose.position.y,
+                          msg->pose.position.z };
+    kin_data.orientation = { msg->pose.orientation.x,
+                             msg->pose.orientation.y,
+                             msg->pose.orientation.z,
+                             msg->pose.orientation.w };
+    kin_data.is_cp = true;
+
+    {
+        std::lock_guard<std::mutex> lock(g_data_mutex);
+        if (g_kinematic_buffer_ecm.size() > MAX_BUFFER_SIZE) {
+            g_kinematic_buffer_ecm.pop();
+        }
+        g_kinematic_buffer_ecm.push(kin_data);
+    }
+}
+// -----------------------------------------------------------------
+
+
 // Thread #2: Synchronization
 void syncThread() {
 
@@ -450,10 +519,11 @@ void writerThread() {
         lock.unlock();
 
 
+        ros::WallTime wall_now = ros::WallTime::now();
         std::ostringstream folder_name;
         folder_name << "recorded_data/"
-                    << packet.stamp.sec << "_"
-                    << packet.stamp.nsec;
+                    << wall_now.sec << "_"
+                    << wall_now.nsec;
         std::string final_folder = folder_name.str();
 
 
@@ -506,6 +576,13 @@ void writerThread() {
             for (auto &p : packet.kin_psm1.position) { pos.append(p); }
             root["position"] = pos;
 
+            // orientation (only for cp)
+            if (!packet.kin_psm1.orientation.empty()) {
+                Json::Value ori(Json::arrayValue);
+                for (auto &o : packet.kin_psm1.orientation) { ori.append(o); }
+                root["orientation"] = ori;
+            }
+
 
             Json::Value vel(Json::arrayValue);
             for (auto &v : packet.kin_psm1.velocity) { vel.append(v); }
@@ -540,6 +617,12 @@ void writerThread() {
             for (auto &p : packet.kin_psm2.position) { pos.append(p); }
             root["position"] = pos;
 
+            if (!packet.kin_psm2.orientation.empty()) {
+                Json::Value ori(Json::arrayValue);
+                for (auto &o : packet.kin_psm2.orientation) { ori.append(o); }
+                root["orientation"] = ori;
+            }
+
 
             Json::Value vel(Json::arrayValue);
             for (auto &v : packet.kin_psm2.velocity) { vel.append(v); }
@@ -572,6 +655,12 @@ void writerThread() {
             Json::Value pos(Json::arrayValue);
             for (auto &p : packet.kin_ecm.position) { pos.append(p); }
             root["position"] = pos;
+
+            if (!packet.kin_ecm.orientation.empty()) {
+                Json::Value ori(Json::arrayValue);
+                for (auto &o : packet.kin_ecm.orientation) { ori.append(o); }
+                root["orientation"] = ori;
+            }
 
 
             Json::Value vel(Json::arrayValue);
@@ -783,19 +872,31 @@ int main(int argc, char** argv) {
 
     if (g_record_psm1) {
         std::string topic = g_use_js ? "/PSM1/measured_js" : "/PSM1/measured_cp";
-        joint_sub_psm1 = nh.subscribe(topic, 1, jointStateCallback);
+        if (g_use_js) {
+            joint_sub_psm1 = nh.subscribe(topic, 1, jointStateCallback);
+        } else {
+            joint_sub_psm1 = nh.subscribe(topic, 1, cartesianPoseCallback);
+        }
     }
 
     // adding in a subscriber for PSM2
     if (g_record_psm2) {
         std::string topic = g_use_js ? "/PSM2/measured_js" : "/PSM2/measured_cp";
-        joint_sub_psm2 = nh.subscribe(topic, 1, jointStateCallbackPSM2);
+        if (g_use_js) {
+            joint_sub_psm2 = nh.subscribe(topic, 1, jointStateCallbackPSM2);
+        } else {
+            joint_sub_psm2 = nh.subscribe(topic, 1, cartesianPoseCallbackPSM2);
+        }
     }
 
     // adding in a subscriber for ECM
     if (g_record_ecm) {
         std::string topic = g_use_js ? "/ECM/measured_js" : "/ECM/measured_cp";
-        joint_sub_ecm = nh.subscribe(topic, 1, jointStateCallbackECM);
+        if (g_use_js) {
+            joint_sub_ecm = nh.subscribe(topic, 1, jointStateCallbackECM);
+        } else {
+            joint_sub_ecm = nh.subscribe(topic, 1, cartesianPoseCallbackECM);
+        }
     }
 
 
