@@ -207,7 +207,17 @@ struct SyncedPacket {
 <<<<<<< HEAD
 =======
     KinematicData    kin_ecm;
+<<<<<<< HEAD
 >>>>>>> db74a70 (re-organized file structure)
+=======
+    KinematicData    sp_psm1;
+    KinematicData    sp_psm2;
+    KinematicData    sp_ecm;
+    KinematicData    jaw_meas_psm1;    // <-- jaw streams
+    KinematicData    jaw_set_psm1;
+    KinematicData    jaw_meas_psm2;
+    KinematicData    jaw_set_psm2;
+>>>>>>> 81c542e (Update synchronized_recorder_node.cpp)
 };
 
 
@@ -229,6 +239,17 @@ std::queue<KinematicData> g_kinematic_buffer;
 std::queue<KinematicData> g_kinematic_buffer_psm2;
 std::queue<KinematicData> g_kinematic_buffer_ecm;
 >>>>>>> db74a70 (re-organized file structure)
+
+// latest set‑point snapshots
+KinematicData g_setpoint_psm1;
+KinematicData g_setpoint_psm2;
+KinematicData g_setpoint_ecm;
+
+// latest jaw snapshots
+KinematicData g_jaw_meas_psm1;
+KinematicData g_jaw_set_psm1;
+KinematicData g_jaw_meas_psm2;
+KinematicData g_jaw_set_psm2;
 
 
 
@@ -500,6 +521,189 @@ void poseCallbackECM(const geometry_msgs::PoseStamped::ConstPtr &msg) {
 
 >>>>>>> db74a70 (re-organized file structure)
 
+// ------------------- callbacks for set‑point streams -------------
+void setpointJSCallbackPSM1(const sensor_msgs::JointState::ConstPtr &msg) {
+    std::lock_guard<std::mutex> lock(g_data_mutex);
+    g_setpoint_psm1.stamp     = msg->header.stamp;
+    g_setpoint_psm1.position  = msg->position;
+    g_setpoint_psm1.velocity  = msg->velocity;
+    g_setpoint_psm1.effort    = msg->effort;
+    g_setpoint_psm1.orientation.clear();
+    g_setpoint_psm1.is_cp = false;
+}
+
+void setpointJSCallbackPSM2(const sensor_msgs::JointState::ConstPtr &msg) {
+    std::lock_guard<std::mutex> lock(g_data_mutex);
+    g_setpoint_psm2.stamp     = msg->header.stamp;
+    g_setpoint_psm2.position  = msg->position;
+    g_setpoint_psm2.velocity  = msg->velocity;
+    g_setpoint_psm2.effort    = msg->effort;
+    g_setpoint_psm2.orientation.clear();
+    g_setpoint_psm2.is_cp = false;
+}
+
+void setpointJSCallbackECM(const sensor_msgs::JointState::ConstPtr &msg) {
+    std::lock_guard<std::mutex> lock(g_data_mutex);
+    g_setpoint_ecm.stamp     = msg->header.stamp;
+    g_setpoint_ecm.position  = msg->position;
+    g_setpoint_ecm.velocity  = msg->velocity;
+    g_setpoint_ecm.effort    = msg->effort;
+    g_setpoint_ecm.orientation.clear();
+    g_setpoint_ecm.is_cp = false;
+}
+
+void setpointCPCallbackPSM1(const geometry_msgs::PoseStamped::ConstPtr &msg) {
+    std::lock_guard<std::mutex> lock(g_data_mutex);
+    g_setpoint_psm1.stamp = msg->header.stamp;
+    g_setpoint_psm1.position = {msg->pose.position.x,
+                                msg->pose.position.y,
+                                msg->pose.position.z};
+    g_setpoint_psm1.orientation = {msg->pose.orientation.x,
+                                   msg->pose.orientation.y,
+                                   msg->pose.orientation.z,
+                                   msg->pose.orientation.w};
+    g_setpoint_psm1.velocity.clear();
+    g_setpoint_psm1.effort.clear();
+    g_setpoint_psm1.is_cp = true;
+}
+
+void setpointCPCallbackPSM2(const geometry_msgs::PoseStamped::ConstPtr &msg) {
+    std::lock_guard<std::mutex> lock(g_data_mutex);
+    g_setpoint_psm2.stamp = msg->header.stamp;
+    g_setpoint_psm2.position = {msg->pose.position.x,
+                                msg->pose.position.y,
+                                msg->pose.position.z};
+    g_setpoint_psm2.orientation = {msg->pose.orientation.x,
+                                   msg->pose.orientation.y,
+                                   msg->pose.orientation.z,
+                                   msg->pose.orientation.w};
+    g_setpoint_psm2.velocity.clear();
+    g_setpoint_psm2.effort.clear();
+    g_setpoint_psm2.is_cp = true;
+}
+
+void setpointCPCallbackECM(const geometry_msgs::PoseStamped::ConstPtr &msg) {
+    std::lock_guard<std::mutex> lock(g_data_mutex);
+    g_setpoint_ecm.stamp = msg->header.stamp;
+    g_setpoint_ecm.position = {msg->pose.position.x,
+                               msg->pose.position.y,
+                               msg->pose.position.z};
+    g_setpoint_ecm.orientation = {msg->pose.orientation.x,
+                                  msg->pose.orientation.y,
+                                  msg->pose.orientation.z,
+                                  msg->pose.orientation.w};
+    g_setpoint_ecm.velocity.clear();
+    g_setpoint_ecm.effort.clear();
+    g_setpoint_ecm.is_cp = true;
+}
+// ----------------------------------------------------------------
+
+
+
+// ------------------- callbacks for jaw streams ------------------
+void jawMeasuredJSCallbackPSM1(const sensor_msgs::JointState::ConstPtr &msg) {
+    std::lock_guard<std::mutex> lock(g_data_mutex);
+    g_jaw_meas_psm1.stamp    = msg->header.stamp;
+    g_jaw_meas_psm1.position = msg->position;
+    g_jaw_meas_psm1.velocity = msg->velocity;
+    g_jaw_meas_psm1.effort   = msg->effort;
+    g_jaw_meas_psm1.orientation.clear();
+    g_jaw_meas_psm1.is_cp = false;
+}
+
+void jawMeasuredJSCallbackPSM2(const sensor_msgs::JointState::ConstPtr &msg) {
+    std::lock_guard<std::mutex> lock(g_data_mutex);
+    g_jaw_meas_psm2.stamp    = msg->header.stamp;
+    g_jaw_meas_psm2.position = msg->position;
+    g_jaw_meas_psm2.velocity = msg->velocity;
+    g_jaw_meas_psm2.effort   = msg->effort;
+    g_jaw_meas_psm2.orientation.clear();
+    g_jaw_meas_psm2.is_cp = false;
+}
+
+void jawSetpointJSCallbackPSM1(const sensor_msgs::JointState::ConstPtr &msg) {
+    std::lock_guard<std::mutex> lock(g_data_mutex);
+    g_jaw_set_psm1.stamp    = msg->header.stamp;
+    g_jaw_set_psm1.position = msg->position;
+    g_jaw_set_psm1.velocity = msg->velocity;
+    g_jaw_set_psm1.effort   = msg->effort;
+    g_jaw_set_psm1.orientation.clear();
+    g_jaw_set_psm1.is_cp = false;
+}
+
+void jawSetpointJSCallbackPSM2(const sensor_msgs::JointState::ConstPtr &msg) {
+    std::lock_guard<std::mutex> lock(g_data_mutex);
+    g_jaw_set_psm2.stamp    = msg->header.stamp;
+    g_jaw_set_psm2.position = msg->position;
+    g_jaw_set_psm2.velocity = msg->velocity;
+    g_jaw_set_psm2.effort   = msg->effort;
+    g_jaw_set_psm2.orientation.clear();
+    g_jaw_set_psm2.is_cp = false;
+}
+
+void jawMeasuredCPCallbackPSM1(const geometry_msgs::PoseStamped::ConstPtr &msg) {
+    std::lock_guard<std::mutex> lock(g_data_mutex);
+    g_jaw_meas_psm1.stamp = msg->header.stamp;
+    g_jaw_meas_psm1.position = {msg->pose.position.x,
+                                msg->pose.position.y,
+                                msg->pose.position.z};
+    g_jaw_meas_psm1.orientation = {msg->pose.orientation.x,
+                                   msg->pose.orientation.y,
+                                   msg->pose.orientation.z,
+                                   msg->pose.orientation.w};
+    g_jaw_meas_psm1.velocity.clear();
+    g_jaw_meas_psm1.effort.clear();
+    g_jaw_meas_psm1.is_cp = true;
+}
+
+void jawMeasuredCPCallbackPSM2(const geometry_msgs::PoseStamped::ConstPtr &msg) {
+    std::lock_guard<std::mutex> lock(g_data_mutex);
+    g_jaw_meas_psm2.stamp = msg->header.stamp;
+    g_jaw_meas_psm2.position = {msg->pose.position.x,
+                                msg->pose.position.y,
+                                msg->pose.position.z};
+    g_jaw_meas_psm2.orientation = {msg->pose.orientation.x,
+                                   msg->pose.orientation.y,
+                                   msg->pose.orientation.z,
+                                   msg->pose.orientation.w};
+    g_jaw_meas_psm2.velocity.clear();
+    g_jaw_meas_psm2.effort.clear();
+    g_jaw_meas_psm2.is_cp = true;
+}
+
+void jawSetpointCPCallbackPSM1(const geometry_msgs::PoseStamped::ConstPtr &msg) {
+    std::lock_guard<std::mutex> lock(g_data_mutex);
+    g_jaw_set_psm1.stamp = msg->header.stamp;
+    g_jaw_set_psm1.position = {msg->pose.position.x,
+                               msg->pose.position.y,
+                               msg->pose.position.z};
+    g_jaw_set_psm1.orientation = {msg->pose.orientation.x,
+                                  msg->pose.orientation.y,
+                                  msg->pose.orientation.z,
+                                  msg->pose.orientation.w};
+    g_jaw_set_psm1.velocity.clear();
+    g_jaw_set_psm1.effort.clear();
+    g_jaw_set_psm1.is_cp = true;
+}
+
+void jawSetpointCPCallbackPSM2(const geometry_msgs::PoseStamped::ConstPtr &msg) {
+    std::lock_guard<std::mutex> lock(g_data_mutex);
+    g_jaw_set_psm2.stamp = msg->header.stamp;
+    g_jaw_set_psm2.position = {msg->pose.position.x,
+                               msg->pose.position.y,
+                               msg->pose.position.z};
+    g_jaw_set_psm2.orientation = {msg->pose.orientation.x,
+                                  msg->pose.orientation.y,
+                                  msg->pose.orientation.z,
+                                  msg->pose.orientation.w};
+    g_jaw_set_psm2.velocity.clear();
+    g_jaw_set_psm2.effort.clear();
+    g_jaw_set_psm2.is_cp = true;
+}
+// ----------------------------------------------------------------
+
+
+
 // Thread #2: Synchronization
 void syncThread() {
 
@@ -649,6 +853,15 @@ void syncThread() {
 =======
             packet.kin_ecm   = kin3;
 
+            packet.sp_psm1   = g_setpoint_psm1;
+            packet.sp_psm2   = g_setpoint_psm2;
+            packet.sp_ecm    = g_setpoint_ecm;
+
+            packet.jaw_meas_psm1 = g_jaw_meas_psm1;
+            packet.jaw_set_psm1  = g_jaw_set_psm1;
+            packet.jaw_meas_psm2 = g_jaw_meas_psm2;
+            packet.jaw_set_psm2  = g_jaw_set_psm2;
+
             g_synced_queue.push(packet);
 
             // pop the buffers we used
@@ -795,11 +1008,20 @@ void writerThread() {
             root["header"]["sec"]  = (Json::Value::Int64)packet.kin_psm1.stamp.sec;
             root["header"]["nsec"] = (Json::Value::Int64)packet.kin_psm1.stamp.nsec;
 
+            // arm
+            Json::Value arm_meas;
+            {
+                Json::Value pos(Json::arrayValue);
+                for (auto &p : packet.kin_psm1.position) { pos.append(p); }
+                arm_meas["position"] = pos;
 
-            Json::Value pos(Json::arrayValue);
-            for (auto &p : packet.kin_psm1.position) { pos.append(p); }
-            root["position"] = pos;
+                if (!packet.kin_psm1.orientation.empty()) {
+                    Json::Value ori(Json::arrayValue);
+                    for (auto &o : packet.kin_psm1.orientation) { ori.append(o); }
+                    arm_meas["orientation"] = ori;
+                }
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 =======
             if (!packet.kin_psm1.orientation.empty()) {
@@ -809,23 +1031,68 @@ void writerThread() {
             }
 
 >>>>>>> db74a70 (re-organized file structure)
+=======
+                Json::Value vel(Json::arrayValue);
+                for (auto &v : packet.kin_psm1.velocity) { vel.append(v); }
+                arm_meas["velocity"] = vel;
 
-            Json::Value vel(Json::arrayValue);
-            for (auto &v : packet.kin_psm1.velocity) { vel.append(v); }
-            root["velocity"] = vel;
+                Json::Value eff(Json::arrayValue);
+                for (auto &e : packet.kin_psm1.effort) { eff.append(e); }
+                arm_meas["effort"] = eff;
+            }
 
+            Json::Value arm_set;
+            if (!packet.sp_psm1.position.empty()) {
+                Json::Value pos(Json::arrayValue);
+                for (auto &p : packet.sp_psm1.position) { pos.append(p); }
+                arm_set["position"] = pos;
+>>>>>>> 81c542e (Update synchronized_recorder_node.cpp)
 
-            Json::Value eff(Json::arrayValue);
-            for (auto &e : packet.kin_psm1.effort) { eff.append(e); }
-            root["effort"] = eff;
+                if (!packet.sp_psm1.orientation.empty()) {
+                    Json::Value ori(Json::arrayValue);
+                    for (auto &o : packet.sp_psm1.orientation) { ori.append(o); }
+                    arm_set["orientation"] = ori;
+                }
 
+                Json::Value vel(Json::arrayValue);
+                for (auto &v : packet.sp_psm1.velocity) { vel.append(v); }
+                arm_set["velocity"] = vel;
+
+                Json::Value eff(Json::arrayValue);
+                for (auto &e : packet.sp_psm1.effort) { eff.append(e); }
+                arm_set["effort"] = eff;
+            }
+
+            Json::Value jaw_meas;
+            if (!packet.jaw_meas_psm1.position.empty()) {
+                Json::Value pos(Json::arrayValue);
+                for (auto &p : packet.jaw_meas_psm1.position) { pos.append(p); }
+                jaw_meas["position"] = pos;
+            }
+
+            Json::Value jaw_set;
+            if (!packet.jaw_set_psm1.position.empty()) {
+                Json::Value pos(Json::arrayValue);
+                for (auto &p : packet.jaw_set_psm1.position) { pos.append(p); }
+                jaw_set["position"] = pos;
+            }
+
+            Json::Value arm_block;
+            arm_block["measured_data"] = arm_meas;
+            arm_block["setpoint_data"] = arm_set;
+
+            Json::Value jaw_block;
+            jaw_block["measured_data"] = jaw_meas;
+            jaw_block["setpoint_data"] = jaw_set;
+
+            root["arm"] = arm_block;
+            root["jaw"] = jaw_block;
 
             std::ofstream file(kin_path_psm1);
             if (!file) {
                 std::cerr << "Failed to open kinematics_PSM1.json for writing.\n";
                 continue;
             }
-
 
             file << root.toStyledString();
             file.close();
@@ -843,11 +1110,19 @@ void writerThread() {
             root["header"]["sec"]  = (Json::Value::Int64)packet.kin_psm2.stamp.sec;
             root["header"]["nsec"] = (Json::Value::Int64)packet.kin_psm2.stamp.nsec;
 
+            Json::Value arm_meas;
+            {
+                Json::Value pos(Json::arrayValue);
+                for (auto &p : packet.kin_psm2.position) { pos.append(p); }
+                arm_meas["position"] = pos;
 
-            Json::Value pos(Json::arrayValue);
-            for (auto &p : packet.kin_psm2.position) { pos.append(p); }
-            root["position"] = pos;
+                if (!packet.kin_psm2.orientation.empty()) {
+                    Json::Value ori(Json::arrayValue);
+                    for (auto &o : packet.kin_psm2.orientation) { ori.append(o); }
+                    arm_meas["orientation"] = ori;
+                }
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 =======
             if (!packet.kin_psm2.orientation.empty()) {
@@ -857,16 +1132,62 @@ void writerThread() {
             }
 
 >>>>>>> db74a70 (re-organized file structure)
+=======
+                Json::Value vel(Json::arrayValue);
+                for (auto &v : packet.kin_psm2.velocity) { vel.append(v); }
+                arm_meas["velocity"] = vel;
 
-            Json::Value vel(Json::arrayValue);
-            for (auto &v : packet.kin_psm2.velocity) { vel.append(v); }
-            root["velocity"] = vel;
+                Json::Value eff(Json::arrayValue);
+                for (auto &e : packet.kin_psm2.effort) { eff.append(e); }
+                arm_meas["effort"] = eff;
+            }
 
+            Json::Value arm_set;
+            if (!packet.sp_psm2.position.empty()) {
+                Json::Value pos(Json::arrayValue);
+                for (auto &p : packet.sp_psm2.position) { pos.append(p); }
+                arm_set["position"] = pos;
+>>>>>>> 81c542e (Update synchronized_recorder_node.cpp)
 
-            Json::Value eff(Json::arrayValue);
-            for (auto &e : packet.kin_psm2.effort) { eff.append(e); }
-            root["effort"] = eff;
+                if (!packet.sp_psm2.orientation.empty()) {
+                    Json::Value ori(Json::arrayValue);
+                    for (auto &o : packet.sp_psm2.orientation) { ori.append(o); }
+                    arm_set["orientation"] = ori;
+                }
 
+                Json::Value vel(Json::arrayValue);
+                for (auto &v : packet.sp_psm2.velocity) { vel.append(v); }
+                arm_set["velocity"] = vel;
+
+                Json::Value eff(Json::arrayValue);
+                for (auto &e : packet.sp_psm2.effort) { eff.append(e); }
+                arm_set["effort"] = eff;
+            }
+
+            Json::Value jaw_meas;
+            if (!packet.jaw_meas_psm2.position.empty()) {
+                Json::Value pos(Json::arrayValue);
+                for (auto &p : packet.jaw_meas_psm2.position) { pos.append(p); }
+                jaw_meas["position"] = pos;
+            }
+
+            Json::Value jaw_set;
+            if (!packet.jaw_set_psm2.position.empty()) {
+                Json::Value pos(Json::arrayValue);
+                for (auto &p : packet.jaw_set_psm2.position) { pos.append(p); }
+                jaw_set["position"] = pos;
+            }
+
+            Json::Value arm_block;
+            arm_block["measured_data"] = arm_meas;
+            arm_block["setpoint_data"] = arm_set;
+
+            Json::Value jaw_block;
+            jaw_block["measured_data"] = jaw_meas;
+            jaw_block["setpoint_data"] = jaw_set;
+
+            root["arm"] = arm_block;
+            root["jaw"] = jaw_block;
 
             std::ofstream file(kin_path_psm2);
             if (!file) {
@@ -879,37 +1200,63 @@ void writerThread() {
         }
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 
         std::cout << "[writerThread] Wrote images + PSM1 & PSM2 JSON to " 
 =======
         // --- Write ECM kinematics ---
+=======
+        // --- Write ECM kinematics (unchanged) ---
+>>>>>>> 81c542e (Update synchronized_recorder_node.cpp)
         if (g_record_ecm) {
             std::string kin_path_ecm = final_folder + "/kinematics_ECM.json";
             Json::Value root;
             root["header"]["sec"]  = (Json::Value::Int64)packet.kin_ecm.stamp.sec;
             root["header"]["nsec"] = (Json::Value::Int64)packet.kin_ecm.stamp.nsec;
 
+            Json::Value measured;
+            {
+                Json::Value pos(Json::arrayValue);
+                for (auto &p : packet.kin_ecm.position) { pos.append(p); }
+                measured["position"] = pos;
 
-            Json::Value pos(Json::arrayValue);
-            for (auto &p : packet.kin_ecm.position) { pos.append(p); }
-            root["position"] = pos;
+                if (!packet.kin_ecm.orientation.empty()) {
+                    Json::Value ori(Json::arrayValue);
+                    for (auto &o : packet.kin_ecm.orientation) { ori.append(o); }
+                    measured["orientation"] = ori;
+                }
 
-            if (!packet.kin_ecm.orientation.empty()) {
-                Json::Value ori(Json::arrayValue);
-                for (auto &o : packet.kin_ecm.orientation) { ori.append(o); }
-                root["orientation"] = ori;
+                Json::Value vel(Json::arrayValue);
+                for (auto &v : packet.kin_ecm.velocity) { vel.append(v); }
+                measured["velocity"] = vel;
+
+                Json::Value eff(Json::arrayValue);
+                for (auto &e : packet.kin_ecm.effort) { eff.append(e); }
+                measured["effort"] = eff;
             }
+            root["measured_data"] = measured;
 
+            Json::Value setp;
+            if (!packet.sp_ecm.position.empty()) {
+                Json::Value pos(Json::arrayValue);
+                for (auto &p : packet.sp_ecm.position) { pos.append(p); }
+                setp["position"] = pos;
 
-            Json::Value vel(Json::arrayValue);
-            for (auto &v : packet.kin_ecm.velocity) { vel.append(v); }
-            root["velocity"] = vel;
+                if (!packet.sp_ecm.orientation.empty()) {
+                    Json::Value ori(Json::arrayValue);
+                    for (auto &o : packet.sp_ecm.orientation) { ori.append(o); }
+                    setp["orientation"] = ori;
+                }
 
+                Json::Value vel(Json::arrayValue);
+                for (auto &v : packet.sp_ecm.velocity) { vel.append(v); }
+                setp["velocity"] = vel;
 
-            Json::Value eff(Json::arrayValue);
-            for (auto &e : packet.kin_ecm.effort) { eff.append(e); }
-            root["effort"] = eff;
-
+                Json::Value eff(Json::arrayValue);
+                for (auto &e : packet.sp_ecm.effort) { eff.append(e); }
+                setp["effort"] = eff;
+            }
+            root["setpoint_data"] = setp;
 
             std::ofstream file(kin_path_ecm);
             if (!file) {
@@ -1329,13 +1676,40 @@ int main(int argc, char** argv) {
     ros::Subscriber joint_sub_psm2;
     ros::Subscriber joint_sub_ecm;
 
+    ros::Subscriber set_sub_psm1;
+    ros::Subscriber set_sub_psm2;
+    ros::Subscriber set_sub_ecm;
+
+    ros::Subscriber jaw_meas_sub_psm1;
+    ros::Subscriber jaw_meas_sub_psm2;
+    ros::Subscriber jaw_set_sub_psm1;
+    ros::Subscriber jaw_set_sub_psm2;
+
     if (g_record_psm1) {
         if (g_use_js) {
             std::string topic = "/PSM1/measured_js";
             joint_sub_psm1 = nh.subscribe(topic, 1, jointStateCallback);
+
+            std::string set_topic = "/PSM1/setpoint_js";
+            set_sub_psm1 = nh.subscribe(set_topic, 1, setpointJSCallbackPSM1);
+
+            std::string jaw_topic = "/PSM1/jaw/measured_js";
+            jaw_meas_sub_psm1 = nh.subscribe(jaw_topic, 1, jawMeasuredJSCallbackPSM1);
+
+            std::string jaw_set_topic = "/PSM1/jaw/setpoint_js";
+            jaw_set_sub_psm1 = nh.subscribe(jaw_set_topic, 1, jawSetpointJSCallbackPSM1);
         } else {
             std::string topic = "/PSM1/measured_cp";
             joint_sub_psm1 = nh.subscribe(topic, 1, poseCallbackPSM1);
+
+            std::string set_topic = "/PSM1/setpoint_cp";
+            set_sub_psm1 = nh.subscribe(set_topic, 1, setpointCPCallbackPSM1);
+
+            std::string jaw_topic = "/PSM1/jaw/measured_cp";
+            jaw_meas_sub_psm1 = nh.subscribe(jaw_topic, 1, jawMeasuredCPCallbackPSM1);
+
+            std::string jaw_set_topic = "/PSM1/jaw/setpoint_cp";
+            jaw_set_sub_psm1 = nh.subscribe(jaw_set_topic, 1, jawSetpointCPCallbackPSM1);
         }
     }
 
@@ -1344,9 +1718,27 @@ int main(int argc, char** argv) {
         if (g_use_js) {
             std::string topic = "/PSM2/measured_js";
             joint_sub_psm2 = nh.subscribe(topic, 1, jointStateCallbackPSM2);
+
+            std::string set_topic = "/PSM2/setpoint_js";
+            set_sub_psm2 = nh.subscribe(set_topic, 1, setpointJSCallbackPSM2);
+
+            std::string jaw_topic = "/PSM2/jaw/measured_js";
+            jaw_meas_sub_psm2 = nh.subscribe(jaw_topic, 1, jawMeasuredJSCallbackPSM2);
+
+            std::string jaw_set_topic = "/PSM2/jaw/setpoint_js";
+            jaw_set_sub_psm2 = nh.subscribe(jaw_set_topic, 1, jawSetpointJSCallbackPSM2);
         } else {
             std::string topic = "/PSM2/measured_cp";
             joint_sub_psm2 = nh.subscribe(topic, 1, poseCallbackPSM2);
+
+            std::string set_topic = "/PSM2/setpoint_cp";
+            set_sub_psm2 = nh.subscribe(set_topic, 1, setpointCPCallbackPSM2);
+
+            std::string jaw_topic = "/PSM2/jaw/measured_cp";
+            jaw_meas_sub_psm2 = nh.subscribe(jaw_topic, 1, jawMeasuredCPCallbackPSM2);
+
+            std::string jaw_set_topic = "/PSM2/jaw/setpoint_cp";
+            jaw_set_sub_psm2 = nh.subscribe(jaw_set_topic, 1, jawSetpointCPCallbackPSM2);
         }
     }
 
@@ -1355,9 +1747,15 @@ int main(int argc, char** argv) {
         if (g_use_js) {
             std::string topic = "/ECM/measured_js";
             joint_sub_ecm = nh.subscribe(topic, 1, jointStateCallbackECM);
+
+            std::string set_topic = "/ECM/setpoint_js";
+            set_sub_ecm = nh.subscribe(set_topic, 1, setpointJSCallbackECM);
         } else {
             std::string topic = "/ECM/measured_cp";
             joint_sub_ecm = nh.subscribe(topic, 1, poseCallbackECM);
+
+            std::string set_topic = "/ECM/setpoint_cp";
+            set_sub_ecm = nh.subscribe(set_topic, 1, setpointCPCallbackECM);
         }
     }
 >>>>>>> db74a70 (re-organized file structure)
