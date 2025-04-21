@@ -798,9 +798,15 @@ void syncThread() {
 
         if (g_use_left_image)  in_tol &= fabs((left_img.stamp  - ref_stamp).toSec())  < g_time_tol;
         if (g_use_right_image) in_tol &= fabs((right_img.stamp - ref_stamp).toSec())  < g_time_tol;
-        if (g_record_psm1 && g_record_psm2) in_tol &= fabs((kin2.stamp - ref_stamp).toSec()) < g_time_tol;
-        if (g_record_psm1 && g_record_ecm)  in_tol &= fabs((kin3.stamp - ref_stamp).toSec()) < g_time_tol;
-        if (!g_record_psm1 && g_record_psm2 && g_record_ecm) in_tol &= fabs((kin3.stamp - ref_stamp).toSec()) < g_time_tol;
+
+        // Lines below are commented out, because we don't need to compare kinematic data to each other
+        // in terms of time discrepency. each set of kinematic data is already compared to the images timestamp.
+
+        // My experiments have shown that de-commenting the lines below do very little to reducing time discrepency.
+
+        // if (g_record_psm1 && g_record_psm2) in_tol &= fabs((kin2.stamp - ref_stamp).toSec()) < g_time_tol;
+        // if (g_record_psm1 && g_record_ecm)  in_tol &= fabs((kin3.stamp - ref_stamp).toSec()) < g_time_tol;
+        // if (!g_record_psm1 && g_record_psm2 && g_record_ecm) in_tol &= fabs((kin3.stamp - ref_stamp).toSec()) < g_time_tol;
 
         if (in_tol) 
         {
@@ -1705,11 +1711,11 @@ int main(int argc, char** argv) {
             std::string set_topic = "/PSM1/setpoint_cp";
             set_sub_psm1 = nh.subscribe(set_topic, 1, setpointCPCallbackPSM1);
 
-            std::string jaw_topic = "/PSM1/jaw/measured_cp";
-            jaw_meas_sub_psm1 = nh.subscribe(jaw_topic, 1, jawMeasuredCPCallbackPSM1);
+            std::string jaw_topic = "/PSM1/jaw/measured_js";
+            jaw_meas_sub_psm1 = nh.subscribe(jaw_topic, 1, jawMeasuredJSCallbackPSM1);
 
-            std::string jaw_set_topic = "/PSM1/jaw/setpoint_cp";
-            jaw_set_sub_psm1 = nh.subscribe(jaw_set_topic, 1, jawSetpointCPCallbackPSM1);
+            std::string jaw_set_topic = "/PSM1/jaw/setpoint_js";
+            jaw_set_sub_psm1 = nh.subscribe(jaw_set_topic, 1, jawSetpointJSCallbackPSM1);
         }
     }
 
@@ -1734,11 +1740,11 @@ int main(int argc, char** argv) {
             std::string set_topic = "/PSM2/setpoint_cp";
             set_sub_psm2 = nh.subscribe(set_topic, 1, setpointCPCallbackPSM2);
 
-            std::string jaw_topic = "/PSM2/jaw/measured_cp";
-            jaw_meas_sub_psm2 = nh.subscribe(jaw_topic, 1, jawMeasuredCPCallbackPSM2);
+            std::string jaw_topic = "/PSM2/jaw/measured_js";
+            jaw_meas_sub_psm2 = nh.subscribe(jaw_topic, 1, jawMeasuredJSCallbackPSM2);
 
-            std::string jaw_set_topic = "/PSM2/jaw/setpoint_cp";
-            jaw_set_sub_psm2 = nh.subscribe(jaw_set_topic, 1, jawSetpointCPCallbackPSM2);
+            std::string jaw_set_topic = "/PSM2/jaw/setpoint_js";
+            jaw_set_sub_psm2 = nh.subscribe(jaw_set_topic, 1, jawSetpointJSCallbackPSM2);
         }
     }
 
