@@ -154,10 +154,10 @@ Here'a full list of all dependencies necessary for this node:
     | `-x` | `js` \| `cp` | yes | Record joint‑space (`measured_js`) or Cartesian (`measured_cp`) streams |
     | `-t` | `<seconds>` | yes | Max time skew allowed when matching topics |
     
-    Example (stereo, PSM1+PSM2, joint‑space, 3 ms tolerance):
+    Example (stereo, PSM1+PSM2, joint‑space, 2 ms tolerance):
     
     ```bash
-    rosrun synchronized_recorder synchronized_recorder_node -c test -m stereo -a PSM1 -a PSM2 -x js -t 0.003
+    rosrun synchronized_recorder synchronized_recorder_node -c test -m stereo -a PSM1 -a PSM2 -x js -t 0.002
     
 
 <br>
