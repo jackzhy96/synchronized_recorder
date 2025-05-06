@@ -116,7 +116,7 @@ Here'a full list of all dependencies necessary for this node:
     ```
     roslaunch dvrk_video decklink_stereo_1280x1024.launch stereo_rig_name:=test
     ```
-    Important: stereo_rig_name must be set to "test"!!!
+    Important: stereo_rig_name can be set to whatever you'd like (doesn't necessarily need to be "test"), but you'll need to indicate the stereo_rig_name when passing in the <camera topic> argument.
     
   - roscore
 
