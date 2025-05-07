@@ -102,38 +102,39 @@ Each synchronized bundle is written to a timestamp‑named folder in the output 
 
 
 ## Build & Run Package
-1. Clone repository
+1. **Clone repository**
 ```
 git clone <repository_url>
 cd <repository_directory>
 ```
-2. Build package
+2. **Build package**<br>
 Ensure your CMakeLists.txt includes the necessary dependencies (ROS, OpenCV, JsonCpp). If something's missing, you'll know from error msgs during build.
 ```
 catkin build --summary
 source devel/setup.bash
 ```
 
-3. Run node
-Ensure that you've started all necessary processes (roscore, stereo camera, lighting if necessary).
-Here'a full list of all dependencies necessary for this node:
+3. **Run node**<br>
+Ensure that you've started all necessary processes (roscore, stereo camera, lighting if necessary).<br>
+Here's a full list of all dependencies necessary for this node:
   - Stereo camera. Start this using the following command:
     ```
     roslaunch dvrk_video decklink_stereo_1280x1024.launch stereo_rig_name:=test
     ```
     Important: stereo_rig_name can be set to whatever you'd like (doesn't necessarily need to be "test"), but you'll need to indicate the stereo_rig_name when passing in the <camera_topic> argument.
     
-  - ```roscore```
+  - Make sure ```roscore``` is running.
 
-  - dvrk control console turned on.
-    First, navigate to this folder: username@lcsr-dvrk-xx: ~/catkin_ws/src/dvrk/dvrk_config_jhu/jhu-daVinci
-    Start this using the following command:
+  - Make sure dvrk control console is turned on.
+    First, navigate to this folder:<br>
+    `username@lcsr-dvrk-xx: ~/catkin_ws/src/dvrk/dvrk_config_jhu/jhu-daVinci`<br>
+    Start the console using the following command:
     ```
     rosrun dvrk_robot dvrk_console_json -j console-SUJ-ECM-PSM1-PSM2.json -p 0.001
     ```
     Important: verify that the dvrk is in the powered on status in the console!
     
-  - Verify there's output kinetic data, using these commands:
+  - Verify there's output kinematic data, using these commands:
     ```
     rostopic echo /PSM1/measured_js
 
