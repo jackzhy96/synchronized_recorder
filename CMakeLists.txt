@@ -165,7 +165,14 @@ target_link_libraries(${PROJECT_NAME}_node
   #${Jsoncpp_LIBRARIES}
   jsoncpp
 )
-
+add_executable(synchronized_recorder_backup
+  src/back_up2.cpp              # 你的新文件
+)
+target_link_libraries(synchronized_recorder_backup
+  ${catkin_LIBRARIES}
+  ${OpenCV_LIBRARIES}
+  jsoncpp
+)
 #############
 ## Install ##
 #############
