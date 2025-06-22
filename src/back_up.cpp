@@ -2,9 +2,11 @@
 #include <image_transport/image_transport.h>
 #include <sensor_msgs/Image.h>
 #include <sensor_msgs/JointState.h>
-#include <geometry_msgs/PoseStamped.h>   // <-- added for measured_cp
+#include <geometry_msgs/PoseStamped.h>   // this used for measured_cp
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/opencv.hpp>
+#include <geometry_msgs/TwistStamped.h>   // cv
+#include <cmath>                          
 
 #include <thread>
 #include <mutex>
@@ -24,28 +26,31 @@
 void printUsage() {
     std::cout << "Usage: rosrun synchronized_recorder synchronized_recorder_node "
               << "-c <camera topic> -m <stereo|mono> [-d <left|right>] "
-              << "-a PSM1 [-a PSM2] [-a ECM] -x <js|cp> -t <time_tolerance_seconds>" << std::endl;
+              << "-a PSM1 [-a PSM2] [-a ECM] -x <js|cp> -t <time_tolerance_seconds> [-v]" << std::endl;
 }
 
-std::string g_camera_topic_base = "test";   // default camera topic base
-bool        g_use_left_image    = true;     // left camera
-bool        g_use_right_image   = true;     // right camera
-bool        g_record_psm1       = true;     // PSM1 kinematics
-bool        g_record_psm2       = true;     // PSM2 kinematics
-bool        g_record_ecm        = false;    // ECM  kinematics
+std::string g_camera_topic_base = "test";   // default camera topic base; still user must specify the topic in the argument
+bool        g_use_left_image    = true;     // using left camera?
+bool        g_use_right_image   = true;     // using right camera?
+bool        g_record_psm1       = true;     // using PSM1 kinematics?
+bool        g_record_psm2       = true;     // using PSM2 kinematics?
+bool        g_record_ecm        = false;    // using ECM  kinematics?
+bool        g_record_cv = false;            // measured_cv
 
 bool        g_use_js            = true;     // true = measured_js, false = measured_cp
 
-double      g_time_tol          = 0.005;    // 5ms tolerance
+double      g_time_tol          = 0.005;    // default is 5ms tolerance; still user must specify the tolerance in the argument
 
-// --- new constant: number of concurrent writer threads ---
-const int NUM_WRITER_THREADS = 4;
 
+const int NUM_WRITER_THREADS = 4; // number of concurrent writer threads
+
+// below helper function parses arguments and sets up the problem to do what the user requests
 void parseArguments(int argc, char** argv) {
     bool camera_topic_set = false;
     bool camera_mode_set  = false;
     bool time_tol_set     = false;
     bool kin_type_set     = false;
+    bool cv_set = false;
 
     std::vector<std::string> a_params;
     std::string camera_mode_str;
@@ -79,11 +84,17 @@ void parseArguments(int argc, char** argv) {
             if (i + 1 < argc) { g_time_tol = std::stod(argv[++i]); time_tol_set = true; }
             else { printUsage(); exit(EXIT_FAILURE); }
         }
+        else if (arg == "-v") {
+            g_record_cv = true;
+            cv_set = true;
+        }
         else {
             printUsage(); exit(EXIT_FAILURE);
         }
     }
 
+    // give user warning that some required arg is missing
+    // also give the correct arg format
     if (!camera_topic_set || !camera_mode_set || !time_tol_set || !kin_type_set) {
         std::cerr << "Error: Missing required parameter(s)." << std::endl;
         printUsage();
@@ -135,6 +146,7 @@ void parseArguments(int argc, char** argv) {
         exit(EXIT_FAILURE);
     }
 
+    // set up PSM1/PSM2/ECM recordings
     for (auto &a : a_params) {
         if (a == "PSM1")       g_record_psm1 = true;
         else if (a == "PSM2")  g_record_psm2 = true;
@@ -146,7 +158,7 @@ void parseArguments(int argc, char** argv) {
         }
     }
 
-    // kinematic type handling
+    // kinematic type handling; js or cp?
     if (kin_type_str == "js") {
         g_use_js = true;
     } else if (kin_type_str == "cp") {
@@ -165,7 +177,7 @@ struct KinematicData {
     std::vector<double> orientation;   // populated for cp
     std::vector<double> velocity;
     std::vector<double> effort;
-    bool is_cp = false;                // true if coming from measured_cp
+    bool is_cp = false;                // true if data stream is coming from measured_cp
 };
 
 
@@ -176,7 +188,7 @@ struct ImageData {
 };
 
 
-// Combine the data at an given timestamp into a packet
+// combine the data at an given timestamp into a packet
 struct SyncedPacket {
     ros::Time        stamp;       // reference timestamp (from the matched data)
     ImageData        left_img;
@@ -187,10 +199,13 @@ struct SyncedPacket {
     KinematicData    sp_psm1;
     KinematicData    sp_psm2;
     KinematicData    sp_ecm;
-    KinematicData    jaw_meas_psm1;    // <-- jaw streams
+    KinematicData    jaw_meas_psm1;    // jaw streams
     KinematicData    jaw_set_psm1;
     KinematicData    jaw_meas_psm2;
     KinematicData    jaw_set_psm2;
+    KinematicData    cv_psm1;
+    KinematicData    cv_psm2;
+    // note: jaw data is not available for ECM!
 };
 
 
@@ -205,8 +220,10 @@ std::queue<ImageData>     g_right_image_buffer;
 std::queue<KinematicData> g_kinematic_buffer;
 std::queue<KinematicData> g_kinematic_buffer_psm2;
 std::queue<KinematicData> g_kinematic_buffer_ecm;
+std::queue<KinematicData> g_cv_buffer_psm1;
+std::queue<KinematicData> g_cv_buffer_psm2;
 
-// latest set‑point snapshots
+// latest setpoint snapshots
 KinematicData g_setpoint_psm1;
 KinematicData g_setpoint_psm2;
 KinematicData g_setpoint_ecm;
@@ -219,14 +236,16 @@ KinematicData g_jaw_set_psm2;
 
 
 
-// a queue for matched/synced data that needs to be written
+// queue for matched / synced data that needs to be written
 std::queue<SyncedPacket> g_synced_queue;
 
-const size_t MAX_BUFFER_SIZE         = 1000;     //
+// feel free to experiment with different buffer sizes below; but note that at a certain point,
+// this script's processing speed is capped by the hardware that you're running it on. 
+const size_t MAX_BUFFER_SIZE         = 1000;     // 
 const size_t MAX_SYNCED_QUEUE_SIZE   = 100;      // queue for writing synced data
 
 
-// created separate call back functions for left and right stereo camera
+// create separate call back function for left  stereo camera
 void imageCallbackLeft(const sensor_msgs::ImageConstPtr &msg) {
 
     cv_bridge::CvImageConstPtr cv_ptr;
@@ -255,7 +274,7 @@ void imageCallbackLeft(const sensor_msgs::ImageConstPtr &msg) {
 
 }
 
-// created separate call back functions for left and right stereo camera
+// create separate call back function for right stereo camera
 void imageCallbackRight(const sensor_msgs::ImageConstPtr &msg) {
 
     cv_bridge::CvImageConstPtr cv_ptr;
@@ -284,7 +303,7 @@ void imageCallbackRight(const sensor_msgs::ImageConstPtr &msg) {
 
 }
 
-
+// get kinematic for PSM1
 void jointStateCallback(const sensor_msgs::JointState::ConstPtr &msg) {
     KinematicData kin_data;
     kin_data.stamp   = msg->header.stamp;
@@ -347,7 +366,8 @@ void jointStateCallbackECM(const sensor_msgs::JointState::ConstPtr &msg) {
 
 
 
-// ------------------- callbacks for measured_cp -------------------
+// ------------------- below functions are callbacks for measured_cp -------------------
+
 void poseCallbackPSM1(const geometry_msgs::PoseStamped::ConstPtr &msg) {
     KinematicData kin_data;
     kin_data.stamp = msg->header.stamp;
@@ -410,11 +430,29 @@ void poseCallbackECM(const geometry_msgs::PoseStamped::ConstPtr &msg) {
         g_kinematic_buffer_ecm.push(kin_data);
     }
 }
-// ----------------------------------------------------------------
+void cvCallbackPSM2(const geometry_msgs::TwistStamped::ConstPtr &msg){
+    KinematicData kd;
+    kd.stamp = msg->header.stamp;
+    kd.velocity = { msg->twist.linear.x, msg->twist.linear.y, msg->twist.linear.z,
+                    msg->twist.angular.x, msg->twist.angular.y, msg->twist.angular.z };
+    kd.is_cp = false;   // reuse 标志
+    std::lock_guard<std::mutex> lk(g_data_mutex);
+    if (g_cv_buffer_psm2.size() > MAX_BUFFER_SIZE) g_cv_buffer_psm2.pop();
+    g_cv_buffer_psm2.push(kd);
+}
+void cvCallbackPSM1(const geometry_msgs::TwistStamped::ConstPtr &msg){
+    KinematicData kd;
+    kd.stamp = msg->header.stamp;
+    kd.velocity = { msg->twist.linear.x, msg->twist.linear.y, msg->twist.linear.z,
+                    msg->twist.angular.x, msg->twist.angular.y, msg->twist.angular.z };
+    kd.is_cp = false;   // reuse 标志
+    std::lock_guard<std::mutex> lk(g_data_mutex);
+    if (g_cv_buffer_psm1.size() > MAX_BUFFER_SIZE) g_cv_buffer_psm1.pop();
+    g_cv_buffer_psm1.push(kd);
+}
 
+// ------------------- below functions are callbacks for setpoint streams -------------------
 
-
-// ------------------- callbacks for set‑point streams -------------
 void setpointJSCallbackPSM1(const sensor_msgs::JointState::ConstPtr &msg) {
     std::lock_guard<std::mutex> lock(g_data_mutex);
     g_setpoint_psm1.stamp     = msg->header.stamp;
@@ -489,11 +527,12 @@ void setpointCPCallbackECM(const geometry_msgs::PoseStamped::ConstPtr &msg) {
     g_setpoint_ecm.effort.clear();
     g_setpoint_ecm.is_cp = true;
 }
-// ----------------------------------------------------------------
 
 
 
-// ------------------- callbacks for jaw streams ------------------
+// ------------------- below functions are callbacks for jaw streams -------------------
+// note that ECM doesn't carry jaw data
+
 void jawMeasuredJSCallbackPSM1(const sensor_msgs::JointState::ConstPtr &msg) {
     std::lock_guard<std::mutex> lock(g_data_mutex);
     g_jaw_meas_psm1.stamp    = msg->header.stamp;
@@ -593,7 +632,6 @@ void jawSetpointCPCallbackPSM2(const geometry_msgs::PoseStamped::ConstPtr &msg) 
     g_jaw_set_psm2.effort.clear();
     g_jaw_set_psm2.is_cp = true;
 }
-// ----------------------------------------------------------------
 
 
 
@@ -625,6 +663,8 @@ void syncThread() {
             (g_use_right_image && g_right_image_buffer.empty()) ||
             (g_record_psm1     && g_kinematic_buffer.empty())   ||
             (g_record_psm2     && g_kinematic_buffer_psm2.empty()) ||
+            (g_record_cv && g_record_psm1 && g_cv_buffer_psm1.empty()) ||
+            (g_record_cv && g_record_psm2 && g_cv_buffer_psm2.empty()) ||
             (g_record_ecm      && g_kinematic_buffer_ecm.empty())) {
             continue;
         }
@@ -635,7 +675,10 @@ void syncThread() {
         KinematicData kin1;
         KinematicData kin2;
         KinematicData kin3;
-
+        KinematicData cv1, cv2;
+        
+        if (g_record_cv && g_record_psm1) cv1 = g_cv_buffer_psm1.front();
+        if (g_record_cv && g_record_psm2) cv2 = g_cv_buffer_psm2.front();
         if (g_use_left_image)  left_img  = g_left_image_buffer.front();
         if (g_use_right_image) right_img = g_right_image_buffer.front();
         if (g_record_psm1)     kin1      = g_kinematic_buffer.front();       // PSM1
@@ -652,9 +695,16 @@ void syncThread() {
 
         if (g_use_left_image)  in_tol &= fabs((left_img.stamp  - ref_stamp).toSec())  < g_time_tol;
         if (g_use_right_image) in_tol &= fabs((right_img.stamp - ref_stamp).toSec())  < g_time_tol;
-        if (g_record_psm1 && g_record_psm2) in_tol &= fabs((kin2.stamp - ref_stamp).toSec()) < g_time_tol;
-        if (g_record_psm1 && g_record_ecm)  in_tol &= fabs((kin3.stamp - ref_stamp).toSec()) < g_time_tol;
-        if (!g_record_psm1 && g_record_psm2 && g_record_ecm) in_tol &= fabs((kin3.stamp - ref_stamp).toSec()) < g_time_tol;
+        if (g_record_cv && g_record_psm1) in_tol &= fabs((cv1.stamp - ref_stamp).toSec()) < g_time_tol;
+        if (g_record_cv && g_record_psm2) in_tol &= fabs((cv2.stamp - ref_stamp).toSec()) < g_time_tol;
+        // Lines below are commented out, because we don't need to compare kinematic data to each other
+        // in terms of time discrepency. each set of kinematic data is already compared to the images timestamp.
+
+        // My experiments have shown that de-commenting the lines below do very little to reducing time discrepency.
+
+        // if (g_record_psm1 && g_record_psm2) in_tol &= fabs((kin2.stamp - ref_stamp).toSec()) < g_time_tol;
+        // if (g_record_psm1 && g_record_ecm)  in_tol &= fabs((kin3.stamp - ref_stamp).toSec()) < g_time_tol;
+        // if (!g_record_psm1 && g_record_psm2 && g_record_ecm) in_tol &= fabs((kin3.stamp - ref_stamp).toSec()) < g_time_tol;
 
         if (in_tol) 
         {
@@ -675,7 +725,12 @@ void syncThread() {
             packet.jaw_set_psm1  = g_jaw_set_psm1;
             packet.jaw_meas_psm2 = g_jaw_meas_psm2;
             packet.jaw_set_psm2  = g_jaw_set_psm2;
-
+            if (g_record_cv) {
+                packet.cv_psm1 = cv1;
+                packet.cv_psm2 = cv2;
+  
+            }
+            
             g_synced_queue.push(packet);
 
             // pop the buffers we used
@@ -684,7 +739,8 @@ void syncThread() {
             if (g_record_psm1)     g_kinematic_buffer.pop();       // PSM1
             if (g_record_psm2)     g_kinematic_buffer_psm2.pop();  // PSM2
             if (g_record_ecm)      g_kinematic_buffer_ecm.pop();   // ECM
-
+            if (g_record_cv && g_record_psm1) g_cv_buffer_psm1.pop();
+            if (g_record_cv && g_record_psm2) g_cv_buffer_psm2.pop();
             g_cv.notify_one();
         } 
         else {
@@ -697,11 +753,15 @@ void syncThread() {
             if (g_record_psm1)     consider_stamp(kin1.stamp);
             if (g_record_psm2)     consider_stamp(kin2.stamp);
             if (g_record_ecm)      consider_stamp(kin3.stamp);
+            if (g_record_cv && g_record_psm1) consider_stamp(cv1.stamp);
+            if (g_record_cv && g_record_psm2) consider_stamp(cv2.stamp);
 
             if (g_use_left_image  && left_img.stamp  == oldest_stamp) g_left_image_buffer.pop();
             else if (g_use_right_image && right_img.stamp == oldest_stamp) g_right_image_buffer.pop();
             else if (g_record_psm1 && kin1.stamp == oldest_stamp) g_kinematic_buffer.pop();
             else if (g_record_psm2 && kin2.stamp == oldest_stamp) g_kinematic_buffer_psm2.pop();
+            else if (g_record_cv && g_record_psm1 && cv1.stamp == oldest_stamp) g_cv_buffer_psm1.pop();
+            else if (g_record_cv && g_record_psm2 && cv2.stamp == oldest_stamp) g_cv_buffer_psm2.pop();
             else if (g_record_ecm) g_kinematic_buffer_ecm.pop();
         }
 
@@ -809,6 +869,13 @@ void writerThread() {
                 Json::Value eff(Json::arrayValue);
                 for (auto &e : packet.kin_psm1.effort) { eff.append(e); }
                 arm_meas["effort"] = eff;
+
+                if (g_record_cv && !packet.cv_psm1.velocity.empty()) {
+                    Json::Value cart_vel(Json::arrayValue);
+                    for (auto &v : packet.cv_psm1.velocity) cart_vel.append(v);
+                    arm_meas["cartesian_velocity"] = cart_vel;
+                }
+                    
             }
 
             Json::Value arm_set;
@@ -867,6 +934,7 @@ void writerThread() {
             file.close();
         }
 
+        
         // --- Write PSM2 kinematics ---
         if (g_record_psm2) {
             std::string kin_path_psm2 = final_folder + "/kinematics_PSM2.json";
@@ -893,6 +961,12 @@ void writerThread() {
                 Json::Value eff(Json::arrayValue);
                 for (auto &e : packet.kin_psm2.effort) { eff.append(e); }
                 arm_meas["effort"] = eff;
+
+                if (g_record_cv && !packet.cv_psm2.velocity.empty()) {
+                    Json::Value cart_vel(Json::arrayValue);
+                    for (auto &v : packet.cv_psm2.velocity) cart_vel.append(v);
+                    arm_meas["cartesian_velocity"] = cart_vel;
+                }
             }
 
             Json::Value arm_set;
@@ -951,7 +1025,8 @@ void writerThread() {
             file.close();
         }
 
-        // --- Write ECM kinematics (unchanged) ---
+        
+        // --- Write ECM kinematics ---
         if (g_record_ecm) {
             std::string kin_path_ecm = final_folder + "/kinematics_ECM.json";
             Json::Value root;
@@ -1024,9 +1099,9 @@ void writerThread() {
 
 
 
-// ---------------------------- Post-processing functions below ----------------------------
+// ---------------------------- post-processing functions below ----------------------------
 
-
+// remove incomplete folders - these folders are not useful because either images or kinematic data sets are missing
 void cleanupFolders() {
     std::cout << "------ cleanup step: checking for incomplete folders ------" << std::endl;
     std::filesystem::path base_dir("recorded_data");
@@ -1070,7 +1145,7 @@ void cleanupFolders() {
 }
 
 
-
+// testing tool to see the frequency of the recording (counting complete recording sets only)
 void countFoldersPerSecond() {
     std::cout << " ------ Gathering output frequency during runtime ------" << std::endl;
     std::filesystem::path base_dir("recorded_data");
@@ -1193,7 +1268,7 @@ int main(int argc, char** argv) {
         std::string right_topic = "/" + g_camera_topic_base + "/right/image_raw";
         right_sub = it.subscribe(right_topic, 1, imageCallbackRight);
     }
-
+    
 
     ros::Subscriber joint_sub_psm1;
     ros::Subscriber joint_sub_psm2;
@@ -1207,7 +1282,8 @@ int main(int argc, char** argv) {
     ros::Subscriber jaw_meas_sub_psm2;
     ros::Subscriber jaw_set_sub_psm1;
     ros::Subscriber jaw_set_sub_psm2;
-
+    ros::Subscriber cv_sub_psm1, cv_sub_psm2;
+    // adding in a subscriber for PSM1
     if (g_record_psm1) {
         if (g_use_js) {
             std::string topic = "/PSM1/measured_js";
@@ -1228,11 +1304,11 @@ int main(int argc, char** argv) {
             std::string set_topic = "/PSM1/setpoint_cp";
             set_sub_psm1 = nh.subscribe(set_topic, 1, setpointCPCallbackPSM1);
 
-            std::string jaw_topic = "/PSM1/jaw/measured_cp";
-            jaw_meas_sub_psm1 = nh.subscribe(jaw_topic, 1, jawMeasuredCPCallbackPSM1);
+            std::string jaw_topic = "/PSM1/jaw/measured_js";
+            jaw_meas_sub_psm1 = nh.subscribe(jaw_topic, 1, jawMeasuredJSCallbackPSM1);
 
-            std::string jaw_set_topic = "/PSM1/jaw/setpoint_cp";
-            jaw_set_sub_psm1 = nh.subscribe(jaw_set_topic, 1, jawSetpointCPCallbackPSM1);
+            std::string jaw_set_topic = "/PSM1/jaw/setpoint_js";
+            jaw_set_sub_psm1 = nh.subscribe(jaw_set_topic, 1, jawSetpointJSCallbackPSM1);
         }
     }
 
@@ -1257,11 +1333,11 @@ int main(int argc, char** argv) {
             std::string set_topic = "/PSM2/setpoint_cp";
             set_sub_psm2 = nh.subscribe(set_topic, 1, setpointCPCallbackPSM2);
 
-            std::string jaw_topic = "/PSM2/jaw/measured_cp";
-            jaw_meas_sub_psm2 = nh.subscribe(jaw_topic, 1, jawMeasuredCPCallbackPSM2);
+            std::string jaw_topic = "/PSM2/jaw/measured_js";
+            jaw_meas_sub_psm2 = nh.subscribe(jaw_topic, 1, jawMeasuredJSCallbackPSM2);
 
-            std::string jaw_set_topic = "/PSM2/jaw/setpoint_cp";
-            jaw_set_sub_psm2 = nh.subscribe(jaw_set_topic, 1, jawSetpointCPCallbackPSM2);
+            std::string jaw_set_topic = "/PSM2/jaw/setpoint_js";
+            jaw_set_sub_psm2 = nh.subscribe(jaw_set_topic, 1, jawSetpointJSCallbackPSM2);
         }
     }
 
@@ -1283,6 +1359,12 @@ int main(int argc, char** argv) {
     }
 
 
+    if (g_record_cv) {
+            if (g_record_psm1)
+                cv_sub_psm1 = nh.subscribe("/PSM1/measured_cv", 1, cvCallbackPSM1);
+            if (g_record_psm2)
+                cv_sub_psm2 = nh.subscribe("/PSM2/measured_cv", 1, cvCallbackPSM2);
+    }
 
     std::cout << "------ start ROS spin in separate thread ------" << std::endl;
     std::thread ros_spin_thread([] {
