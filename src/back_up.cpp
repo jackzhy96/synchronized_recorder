@@ -26,7 +26,7 @@
 void printUsage() {
     std::cout << "Usage: rosrun synchronized_recorder synchronized_recorder_node "
               << "-c <camera topic> -m <stereo|mono> [-d <left|right>] "
-              << "-a PSM1 [-a PSM2] [-a ECM] -x <js|cp> -t <time_tolerance_seconds> [-v]" << std::endl;
+              << "-a PSM1 [-a PSM2] [-a ECM] -x <js|cp> -t <time_tolerance_seconds> [-v]  [-s]" << std::endl;
 }
 
 std::string g_camera_topic_base = "test";   // default camera topic base; still user must specify the topic in the argument
@@ -36,7 +36,7 @@ bool        g_record_psm1       = true;     // using PSM1 kinematics?
 bool        g_record_psm2       = true;     // using PSM2 kinematics?
 bool        g_record_ecm        = false;    // using ECM  kinematics?
 bool        g_record_cv = false;            // measured_cv
-
+bool        g_use_side_image = false;
 bool        g_use_js            = true;     // true = measured_js, false = measured_cp
 
 double      g_time_tol          = 0.005;    // default is 5ms tolerance; still user must specify the tolerance in the argument
@@ -51,11 +51,14 @@ void parseArguments(int argc, char** argv) {
     bool time_tol_set     = false;
     bool kin_type_set     = false;
     bool cv_set = false;
+    bool side_set = false;
 
     std::vector<std::string> a_params;
     std::string camera_mode_str;
     std::string d_side;
     std::string kin_type_str;
+    
+
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -88,6 +91,11 @@ void parseArguments(int argc, char** argv) {
             g_record_cv = true;
             cv_set = true;
         }
+        else if (arg == "-s") {          
+            g_use_side_image = true;
+            side_set = true;
+        }
+        
         else {
             printUsage(); exit(EXIT_FAILURE);
         }
@@ -205,6 +213,7 @@ struct SyncedPacket {
     KinematicData    jaw_set_psm2;
     KinematicData    cv_psm1;
     KinematicData    cv_psm2;
+    ImageData        side_img; 
     // note: jaw data is not available for ECM!
 };
 
@@ -217,6 +226,7 @@ bool                    g_keep_running = true;
 // buffers for left image, right image, and kinematics
 std::queue<ImageData>     g_left_image_buffer;
 std::queue<ImageData>     g_right_image_buffer;
+std::queue<ImageData>     g_side_image_buffer;
 std::queue<KinematicData> g_kinematic_buffer;
 std::queue<KinematicData> g_kinematic_buffer_psm2;
 std::queue<KinematicData> g_kinematic_buffer_ecm;
@@ -301,6 +311,15 @@ void imageCallbackRight(const sensor_msgs::ImageConstPtr &msg) {
     }
 
 
+}
+void imageCallbackSide(const sensor_msgs::ImageConstPtr& msg) {
+    
+    ImageData d;
+    d.stamp  = msg->header.stamp;
+    d.image  = cv_bridge::toCvShare(msg)->image.clone();
+    std::lock_guard<std::mutex> lk(g_data_mutex);
+    if (g_side_image_buffer.size() > MAX_BUFFER_SIZE) g_side_image_buffer.pop();
+    g_side_image_buffer.push(d);
 }
 
 // get kinematic for PSM1
@@ -665,6 +684,7 @@ void syncThread() {
             (g_record_psm2     && g_kinematic_buffer_psm2.empty()) ||
             (g_record_cv && g_record_psm1 && g_cv_buffer_psm1.empty()) ||
             (g_record_cv && g_record_psm2 && g_cv_buffer_psm2.empty()) ||
+            (g_use_side_image && g_side_image_buffer.empty()) ||
             (g_record_ecm      && g_kinematic_buffer_ecm.empty())) {
             continue;
         }
@@ -676,7 +696,8 @@ void syncThread() {
         KinematicData kin2;
         KinematicData kin3;
         KinematicData cv1, cv2;
-        
+        ImageData     side_img;
+
         if (g_record_cv && g_record_psm1) cv1 = g_cv_buffer_psm1.front();
         if (g_record_cv && g_record_psm2) cv2 = g_cv_buffer_psm2.front();
         if (g_use_left_image)  left_img  = g_left_image_buffer.front();
@@ -684,7 +705,7 @@ void syncThread() {
         if (g_record_psm1)     kin1      = g_kinematic_buffer.front();       // PSM1
         if (g_record_psm2)     kin2      = g_kinematic_buffer_psm2.front();  // PSM2
         if (g_record_ecm)      kin3      = g_kinematic_buffer_ecm.front();   // ECM
-
+        if (g_use_side_image) side_img = g_side_image_buffer.front();
 
         ros::Time ref_stamp;
         if (g_record_psm1)            ref_stamp = kin1.stamp;
@@ -697,6 +718,7 @@ void syncThread() {
         if (g_use_right_image) in_tol &= fabs((right_img.stamp - ref_stamp).toSec())  < g_time_tol;
         if (g_record_cv && g_record_psm1) in_tol &= fabs((cv1.stamp - ref_stamp).toSec()) < g_time_tol;
         if (g_record_cv && g_record_psm2) in_tol &= fabs((cv2.stamp - ref_stamp).toSec()) < g_time_tol;
+        if (g_use_side_image)  in_tol &= fabs((side_img.stamp  - ref_stamp).toSec())  < g_time_tol;
         // Lines below are commented out, because we don't need to compare kinematic data to each other
         // in terms of time discrepency. each set of kinematic data is already compared to the images timestamp.
 
@@ -713,6 +735,8 @@ void syncThread() {
             packet.stamp     = ref_stamp; 
             packet.left_img  = left_img;
             packet.right_img = right_img;
+            packet.side_img =  side_img;
+
             packet.kin_psm1  = kin1;
             packet.kin_psm2  = kin2;
             packet.kin_ecm   = kin3;
@@ -741,6 +765,8 @@ void syncThread() {
             if (g_record_ecm)      g_kinematic_buffer_ecm.pop();   // ECM
             if (g_record_cv && g_record_psm1) g_cv_buffer_psm1.pop();
             if (g_record_cv && g_record_psm2) g_cv_buffer_psm2.pop();
+            if (g_use_side_image)  g_side_image_buffer.pop();
+
             g_cv.notify_one();
         } 
         else {
@@ -749,6 +775,7 @@ void syncThread() {
             auto consider_stamp = [&](ros::Time t){ if (!init || t < oldest_stamp){ oldest_stamp = t; init = true; } };
 
             if (g_use_left_image)  consider_stamp(left_img.stamp);
+            if (g_use_side_image)  consider_stamp(side_img.stamp);
             if (g_use_right_image) consider_stamp(right_img.stamp);
             if (g_record_psm1)     consider_stamp(kin1.stamp);
             if (g_record_psm2)     consider_stamp(kin2.stamp);
@@ -757,6 +784,7 @@ void syncThread() {
             if (g_record_cv && g_record_psm2) consider_stamp(cv2.stamp);
 
             if (g_use_left_image  && left_img.stamp  == oldest_stamp) g_left_image_buffer.pop();
+            else if (g_use_side_image && side_img.stamp == oldest_stamp) g_side_image_buffer.pop();
             else if (g_use_right_image && right_img.stamp == oldest_stamp) g_right_image_buffer.pop();
             else if (g_record_psm1 && kin1.stamp == oldest_stamp) g_kinematic_buffer.pop();
             else if (g_record_psm2 && kin2.stamp == oldest_stamp) g_kinematic_buffer_psm2.pop();
@@ -818,10 +846,11 @@ void writerThread() {
 
 
         // Convert from BGR -> RGB as requested
-        cv::Mat left_rgb, right_rgb;
+        cv::Mat left_rgb, right_rgb, side_rgb;
 
         bool ok_left  = true;
         bool ok_right = true;
+        bool ok_side = true;
 
         if (g_use_left_image) {
             cv::cvtColor(packet.left_img.image,  left_rgb,  cv::COLOR_BGR2RGB);
@@ -835,7 +864,13 @@ void writerThread() {
             ok_right = cv::imwrite(right_img_path, right_rgb, PNG_FAST_PARAMS);
         }
 
-        if ((g_use_left_image && !ok_left) || (g_use_right_image && !ok_right)) {
+        if (g_use_side_image) {
+            cv::cvtColor(packet.side_img.image, side_rgb, cv::COLOR_BGR2RGB);
+            std::string side_path = final_folder + "/image_side.png";
+            ok_side = cv::imwrite(side_path, side_rgb, PNG_FAST_PARAMS);
+        }
+
+        if ((g_use_side_image && !ok_side) ||(g_use_left_image && !ok_left) || (g_use_right_image && !ok_right)) {
             std::cerr << "Failed to write images in " << final_folder << std::endl;
             continue;
         }
@@ -1116,13 +1151,15 @@ void cleanupFolders() {
 
             auto img_left_path  = entry.path() / "image_left.png";
             auto img_right_path = entry.path() / "image_right.png";
+            auto img_side_path = entry.path() / "image_side.png";
             auto json_psm1_path = entry.path() / "kinematics_PSM1.json";
             auto json_psm2_path = entry.path() / "kinematics_PSM2.json";
             auto json_ecm_path  = entry.path() / "kinematics_ECM.json";
 
-
+            
             bool left_exists   = std::filesystem::exists(img_left_path);
             bool right_exists  = std::filesystem::exists(img_right_path);
+            bool side_exists   = std::filesystem::exists(img_side_path);
             bool psm1_exists   = std::filesystem::exists(json_psm1_path);
             bool psm2_exists   = std::filesystem::exists(json_psm2_path);
             bool ecm_exists    = std::filesystem::exists(json_ecm_path);
@@ -1130,9 +1167,11 @@ void cleanupFolders() {
             bool remove = false;
             if (g_use_left_image  && !left_exists)  remove = true;
             if (g_use_right_image && !right_exists) remove = true;
+            if (g_use_side_image && !side_exists)   remove = true;
             if (g_record_psm1     && !psm1_exists)  remove = true;
             if (g_record_psm2     && !psm2_exists)  remove = true;
             if (g_record_ecm      && !ecm_exists)   remove = true;
+
 
             // If missing any required file, remove the folder
             if (remove) {
@@ -1190,6 +1229,7 @@ void reformatDataStorage() {
         if (entry.is_directory()) {
             std::string img_left_src   = entry.path().string() + "/image_left.png";
             std::string img_right_src  = entry.path().string() + "/image_right.png";
+            std::string img_side_src   = entry.path().string() + "/image_side.png";
             std::string kin_src_psm1   = entry.path().string() + "/kinematics_PSM1.json";
             std::string kin_src_psm2   = entry.path().string() + "/kinematics_PSM2.json";
             std::string kin_src_ecm    = entry.path().string() + "/kinematics_ECM.json";
@@ -1197,6 +1237,8 @@ void reformatDataStorage() {
 
             std::string img_left_dst   = base_folder + "/image/" + std::to_string(index) + "_left.png";
             std::string img_right_dst  = base_folder + "/image/" + std::to_string(index) + "_right.png";
+            std::string img_side_dst   = base_folder + "/image/" + std::to_string(index) + "_side.png";
+
             // Now name the kinematics files "index_PSM1.json" and "index_PSM2.json" and "index_ECM.json"
             std::string kin_dst_psm1   = base_folder + "/kinematic/" + std::to_string(index) + "_PSM1.json";
             std::string kin_dst_psm2   = base_folder + "/kinematic/" + std::to_string(index) + "_PSM2.json";
@@ -1212,6 +1254,10 @@ void reformatDataStorage() {
                 std::filesystem::copy(img_right_src, img_right_dst,
                                       std::filesystem::copy_options::overwrite_existing);
             }
+            if (std::filesystem::exists(img_side_src)) {
+                std::filesystem::copy(img_side_src, img_side_dst,
+                                      std::filesystem::copy_options::overwrite_existing);
+            }            
             if (std::filesystem::exists(kin_src_psm1)) {
                 std::filesystem::copy(kin_src_psm1, kin_dst_psm1,
                                       std::filesystem::copy_options::overwrite_existing);
@@ -1259,6 +1305,7 @@ int main(int argc, char** argv) {
 
     image_transport::Subscriber left_sub;
     image_transport::Subscriber right_sub;
+    image_transport::Subscriber side_sub;
 
     if (g_use_left_image) {
         std::string left_topic = "/" + g_camera_topic_base + "/left/image_raw";
@@ -1268,7 +1315,9 @@ int main(int argc, char** argv) {
         std::string right_topic = "/" + g_camera_topic_base + "/right/image_raw";
         right_sub = it.subscribe(right_topic, 1, imageCallbackRight);
     }
-    
+    if (g_use_side_image) {
+    side_sub = it.subscribe("/camera/image_raw", 1, imageCallbackSide);
+    }
 
     ros::Subscriber joint_sub_psm1;
     ros::Subscriber joint_sub_psm2;

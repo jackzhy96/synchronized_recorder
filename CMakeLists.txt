@@ -171,6 +171,14 @@ target_link_libraries(back_up2
   ${OpenCV_LIBRARIES}
   jsoncpp
 )
+
+
+add_executable(synchronized_recorder_node_csr src/synchronized_recorder_node_csr.cpp)
+target_link_libraries(synchronized_recorder_node_csr
+  ${catkin_LIBRARIES}
+  ${OpenCV_LIBRARIES}
+  jsoncpp
+)
 #############
 ## Install ##
 #############
