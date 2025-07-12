@@ -20,6 +20,7 @@
 #include <filesystem> // should be C++17
 #include <string>
 #include <vector>  // added for writer thread pool
+#include <algorithm>   // for std::sort
 
 
 
@@ -188,9 +189,12 @@ struct SyncedPacket {
     KinematicData    js_psm1, cp_psm1;
     KinematicData    js_psm2, cp_psm2;
     KinematicData    js_ecm , cp_ecm;
-    KinematicData    sp_psm1;
-    KinematicData    sp_psm2;
-    KinematicData    sp_ecm;
+    KinematicData    sp_js_psm1, sp_cp_psm1;
+    KinematicData    sp_js_psm2, sp_cp_psm2;
+    KinematicData    sp_js_ecm , sp_cp_ecm;
+    KinematicData    lcp_psm1;   // local measured_cp  
+    KinematicData    lcp_psm2;   // local measured_cp
+    KinematicData    lcp_ecm;    // local measured_cp
     KinematicData    jaw_meas_psm1;    // jaw streams
     KinematicData    jaw_set_psm1;
     KinematicData    jaw_meas_psm2;
@@ -217,14 +221,20 @@ std::queue<KinematicData> g_js_buffer_psm1, g_cp_buffer_psm1;
 std::queue<KinematicData> g_js_buffer_psm2, g_cp_buffer_psm2;
 std::queue<KinematicData> g_js_buffer_ecm , g_cp_buffer_ecm;
 
+std::queue<KinematicData> g_lcp_buffer_psm1;
+std::queue<KinematicData> g_lcp_buffer_psm2;
+std::queue<KinematicData> g_lcp_buffer_ecm;
 
 std::queue<KinematicData> g_cv_buffer_psm1;
 std::queue<KinematicData> g_cv_buffer_psm2;
 
 // latest setpoint snapshots
-KinematicData g_setpoint_psm1;
-KinematicData g_setpoint_psm2;
-KinematicData g_setpoint_ecm;
+
+KinematicData g_setpoint_js_psm1, g_setpoint_cp_psm1;
+KinematicData g_setpoint_js_psm2, g_setpoint_cp_psm2;
+KinematicData g_setpoint_js_ecm , g_setpoint_cp_ecm ;
+
+
 
 // latest jaw snapshots
 KinematicData g_jaw_meas_psm1;
@@ -437,6 +447,61 @@ void poseCallbackECM(const geometry_msgs::PoseStamped::ConstPtr &msg) {
         g_cp_buffer_ecm.push(kin_data);
     }
 }
+
+
+void localCPCallbackPSM1(const geometry_msgs::PoseStamped::ConstPtr &msg)
+{
+    KinematicData kd;
+    kd.stamp      = msg->header.stamp;
+    kd.position   = {msg->pose.position.x,
+                     msg->pose.position.y,
+                     msg->pose.position.z};
+    kd.orientation= {msg->pose.orientation.x,
+                     msg->pose.orientation.y,
+                     msg->pose.orientation.z,
+                     msg->pose.orientation.w};
+    kd.is_cp = true;
+
+    std::lock_guard<std::mutex> lk(g_data_mutex);
+    if (g_lcp_buffer_psm1.size() > MAX_BUFFER_SIZE) g_lcp_buffer_psm1.pop();
+    g_lcp_buffer_psm1.push(kd);
+}
+void localCPCallbackPSM2(const geometry_msgs::PoseStamped::ConstPtr &msg)
+{
+    KinematicData kd;
+    kd.stamp      = msg->header.stamp;
+    kd.position   = {msg->pose.position.x,
+                     msg->pose.position.y,
+                     msg->pose.position.z};
+    kd.orientation= {msg->pose.orientation.x,
+                     msg->pose.orientation.y,
+                     msg->pose.orientation.z,
+                     msg->pose.orientation.w};
+    kd.is_cp = true;
+
+    std::lock_guard<std::mutex> lk(g_data_mutex);
+    if (g_lcp_buffer_psm2.size() > MAX_BUFFER_SIZE) g_lcp_buffer_psm2.pop();
+    g_lcp_buffer_psm2.push(kd);
+}
+void localCPCallbackECM(const geometry_msgs::PoseStamped::ConstPtr &msg)
+{
+    KinematicData kd;
+    kd.stamp      = msg->header.stamp;
+    kd.position   = {msg->pose.position.x,
+                     msg->pose.position.y,
+                     msg->pose.position.z};
+    kd.orientation= {msg->pose.orientation.x,
+                     msg->pose.orientation.y,
+                     msg->pose.orientation.z,
+                     msg->pose.orientation.w};
+    kd.is_cp = true;
+
+    std::lock_guard<std::mutex> lk(g_data_mutex);
+    if (g_lcp_buffer_ecm.size() > MAX_BUFFER_SIZE) g_lcp_buffer_ecm.pop();
+    g_lcp_buffer_ecm.push(kd);
+}
+
+
 void cvCallbackPSM2(const geometry_msgs::TwistStamped::ConstPtr &msg){
     KinematicData kd;
     kd.stamp = msg->header.stamp;
@@ -462,77 +527,77 @@ void cvCallbackPSM1(const geometry_msgs::TwistStamped::ConstPtr &msg){
 
 void setpointJSCallbackPSM1(const sensor_msgs::JointState::ConstPtr &msg) {
     std::lock_guard<std::mutex> lock(g_data_mutex);
-    g_setpoint_psm1.stamp     = msg->header.stamp;
-    g_setpoint_psm1.position  = msg->position;
-    g_setpoint_psm1.velocity  = msg->velocity;
-    g_setpoint_psm1.effort    = msg->effort;
-    g_setpoint_psm1.orientation.clear();
-    g_setpoint_psm1.is_cp = false;
+    g_setpoint_js_psm1.stamp     = msg->header.stamp;
+    g_setpoint_js_psm1.position  = msg->position;
+    g_setpoint_js_psm1.velocity  = msg->velocity;
+    g_setpoint_js_psm1.effort    = msg->effort;
+    g_setpoint_js_psm1.orientation.clear();
+    g_setpoint_js_psm1.is_cp = false;
 }
 
 void setpointJSCallbackPSM2(const sensor_msgs::JointState::ConstPtr &msg) {
     std::lock_guard<std::mutex> lock(g_data_mutex);
-    g_setpoint_psm2.stamp     = msg->header.stamp;
-    g_setpoint_psm2.position  = msg->position;
-    g_setpoint_psm2.velocity  = msg->velocity;
-    g_setpoint_psm2.effort    = msg->effort;
-    g_setpoint_psm2.orientation.clear();
-    g_setpoint_psm2.is_cp = false;
+    g_setpoint_js_psm2.stamp     = msg->header.stamp;
+    g_setpoint_js_psm2.position  = msg->position;
+    g_setpoint_js_psm2.velocity  = msg->velocity;
+    g_setpoint_js_psm2.effort    = msg->effort;
+    g_setpoint_js_psm2.orientation.clear();
+    g_setpoint_js_psm2.is_cp = false;
 }
 
 void setpointJSCallbackECM(const sensor_msgs::JointState::ConstPtr &msg) {
     std::lock_guard<std::mutex> lock(g_data_mutex);
-    g_setpoint_ecm.stamp     = msg->header.stamp;
-    g_setpoint_ecm.position  = msg->position;
-    g_setpoint_ecm.velocity  = msg->velocity;
-    g_setpoint_ecm.effort    = msg->effort;
-    g_setpoint_ecm.orientation.clear();
-    g_setpoint_ecm.is_cp = false;
+    g_setpoint_js_ecm.stamp     = msg->header.stamp;
+    g_setpoint_js_ecm.position  = msg->position;
+    g_setpoint_js_ecm.velocity  = msg->velocity;
+    g_setpoint_js_ecm.effort    = msg->effort;
+    g_setpoint_js_ecm.orientation.clear();
+    g_setpoint_js_ecm.is_cp = false;
 }
 
 void setpointCPCallbackPSM1(const geometry_msgs::PoseStamped::ConstPtr &msg) {
     std::lock_guard<std::mutex> lock(g_data_mutex);
-    g_setpoint_psm1.stamp = msg->header.stamp;
-    g_setpoint_psm1.position = {msg->pose.position.x,
+    g_setpoint_cp_psm1.stamp = msg->header.stamp;
+    g_setpoint_cp_psm1.position = {msg->pose.position.x,
                                 msg->pose.position.y,
                                 msg->pose.position.z};
-    g_setpoint_psm1.orientation = {msg->pose.orientation.x,
+    g_setpoint_cp_psm1.orientation = {msg->pose.orientation.x,
                                    msg->pose.orientation.y,
                                    msg->pose.orientation.z,
                                    msg->pose.orientation.w};
-    g_setpoint_psm1.velocity.clear();
-    g_setpoint_psm1.effort.clear();
-    g_setpoint_psm1.is_cp = true;
+    g_setpoint_cp_psm1.velocity.clear();
+    g_setpoint_cp_psm1.effort.clear();
+    g_setpoint_cp_psm1.is_cp = true;
 }
 
 void setpointCPCallbackPSM2(const geometry_msgs::PoseStamped::ConstPtr &msg) {
     std::lock_guard<std::mutex> lock(g_data_mutex);
-    g_setpoint_psm2.stamp = msg->header.stamp;
-    g_setpoint_psm2.position = {msg->pose.position.x,
+    g_setpoint_cp_psm2.stamp = msg->header.stamp;
+    g_setpoint_cp_psm2.position = {msg->pose.position.x,
                                 msg->pose.position.y,
                                 msg->pose.position.z};
-    g_setpoint_psm2.orientation = {msg->pose.orientation.x,
+    g_setpoint_cp_psm2.orientation = {msg->pose.orientation.x,
                                    msg->pose.orientation.y,
                                    msg->pose.orientation.z,
                                    msg->pose.orientation.w};
-    g_setpoint_psm2.velocity.clear();
-    g_setpoint_psm2.effort.clear();
-    g_setpoint_psm2.is_cp = true;
+    g_setpoint_cp_psm2.velocity.clear();
+    g_setpoint_cp_psm2.effort.clear();
+    g_setpoint_cp_psm2.is_cp = true;
 }
 
 void setpointCPCallbackECM(const geometry_msgs::PoseStamped::ConstPtr &msg) {
     std::lock_guard<std::mutex> lock(g_data_mutex);
-    g_setpoint_ecm.stamp = msg->header.stamp;
-    g_setpoint_ecm.position = {msg->pose.position.x,
+    g_setpoint_cp_ecm.stamp = msg->header.stamp;
+    g_setpoint_cp_ecm.position = {msg->pose.position.x,
                                msg->pose.position.y,
                                msg->pose.position.z};
-    g_setpoint_ecm.orientation = {msg->pose.orientation.x,
+    g_setpoint_cp_ecm.orientation = {msg->pose.orientation.x,
                                   msg->pose.orientation.y,
                                   msg->pose.orientation.z,
                                   msg->pose.orientation.w};
-    g_setpoint_ecm.velocity.clear();
-    g_setpoint_ecm.effort.clear();
-    g_setpoint_ecm.is_cp = true;
+    g_setpoint_cp_ecm.velocity.clear();
+    g_setpoint_cp_ecm.effort.clear();
+    g_setpoint_cp_ecm.is_cp = true;
 }
 
 
@@ -683,11 +748,11 @@ void syncThread() {
             (!g_use_side_image  || !g_side_image_buffer.empty())  &&
 
             (!g_record_psm1 || 
-                (!g_js_buffer_psm1.empty() && !g_cp_buffer_psm1.empty())) &&
+                (!g_js_buffer_psm1.empty() && !g_cp_buffer_psm1.empty()) && !g_lcp_buffer_psm1.empty())&&
             (!g_record_psm2 || 
-                (!g_js_buffer_psm2.empty() && !g_cp_buffer_psm2.empty())) &&
+                (!g_js_buffer_psm2.empty() && !g_cp_buffer_psm2.empty()) && !g_lcp_buffer_psm2.empty())&&
             (!g_record_ecm  || 
-                (!g_js_buffer_ecm.empty() && !g_cp_buffer_ecm.empty())) &&
+                (!g_js_buffer_ecm.empty() && !g_cp_buffer_ecm.empty()) && !g_lcp_buffer_ecm.empty())&&
 
             (!g_record_cv || !g_record_psm1 || !g_cv_buffer_psm1.empty()) &&
             (!g_record_cv || !g_record_psm2 || !g_cv_buffer_psm2.empty());
@@ -698,6 +763,7 @@ void syncThread() {
         ImageData     left_img;
         ImageData     right_img;
         KinematicData js1, cp1, js2, cp2, js3, cp3;
+        KinematicData lcp1, lcp2, lcp3;
         KinematicData cv1, cv2;
         ImageData     side_img;
 
@@ -709,16 +775,19 @@ void syncThread() {
         {
             js1 = g_js_buffer_psm1.front();
             cp1 = g_cp_buffer_psm1.front();
+            lcp1 = g_lcp_buffer_psm1.front();
         }
         if (g_record_psm2)
         {
             js2 = g_js_buffer_psm2.front();
             cp2 = g_cp_buffer_psm2.front();
+            lcp2 = g_lcp_buffer_psm2.front();
         }
         if (g_record_ecm)
         {
             js3 = g_js_buffer_ecm.front();
             cp3 = g_cp_buffer_ecm.front();
+            lcp3 = g_lcp_buffer_ecm.front();
         }
 
         if (g_record_cv && g_record_psm1) cv1 = g_cv_buffer_psm1.front();
@@ -737,6 +806,8 @@ void syncThread() {
         if (g_record_cv && g_record_psm1) in_tol &= fabs((cv1.stamp - ref_stamp).toSec()) < g_time_tol;
         if (g_record_cv && g_record_psm2) in_tol &= fabs((cv2.stamp - ref_stamp).toSec()) < g_time_tol;
         if (g_use_side_image)  in_tol &= fabs((side_img.stamp  - ref_stamp).toSec())  < g_time_tol;
+
+
         // Lines below are commented out, because we don't need to compare kinematic data to each other
         // in terms of time discrepency. each set of kinematic data is already compared to the images timestamp.
 
@@ -745,6 +816,10 @@ void syncThread() {
         // if (g_record_psm1 && g_record_psm2) in_tol &= fabs((kin2.stamp - ref_stamp).toSec()) < g_time_tol;
         // if (g_record_psm1 && g_record_ecm)  in_tol &= fabs((kin3.stamp - ref_stamp).toSec()) < g_time_tol;
         // if (!g_record_psm1 && g_record_psm2 && g_record_ecm) in_tol &= fabs((kin3.stamp - ref_stamp).toSec()) < g_time_tol;
+        // if (g_record_psm1) in_tol &= fabs((lcp1.stamp - ref_stamp).toSec()) < g_time_tol;
+        // if (g_record_psm2) in_tol &= fabs((lcp2.stamp - ref_stamp).toSec()) < g_time_tol;
+        // if (g_record_ecm)  in_tol &= fabs((lcp3.stamp - ref_stamp).toSec()) < g_time_tol;
+
 
         if (in_tol) 
         {
@@ -759,9 +834,18 @@ void syncThread() {
             packet.js_psm2 = js2;   packet.cp_psm2 = cp2;
             packet.js_ecm  = js3;   packet.cp_ecm  = cp3;
 
-            packet.sp_psm1   = g_setpoint_psm1;
-            packet.sp_psm2   = g_setpoint_psm2;
-            packet.sp_ecm    = g_setpoint_ecm;
+            packet.sp_js_psm1 = g_setpoint_js_psm1;
+            packet.sp_cp_psm1 = g_setpoint_cp_psm1;
+
+            packet.sp_js_psm2 = g_setpoint_js_psm2;
+            packet.sp_cp_psm2 = g_setpoint_cp_psm2;
+
+            packet.sp_js_ecm  = g_setpoint_js_ecm;
+            packet.sp_cp_ecm  = g_setpoint_cp_ecm;
+
+            packet.lcp_psm1 = lcp1;      
+            packet.lcp_psm2 = lcp2;
+            packet.lcp_ecm  = lcp3;
 
             packet.jaw_meas_psm1 = g_jaw_meas_psm1;
             packet.jaw_set_psm1  = g_jaw_set_psm1;
@@ -781,11 +865,11 @@ void syncThread() {
             if (g_use_side_image)   g_side_image_buffer.pop();
 
             if (g_record_psm1)
-            { g_js_buffer_psm1.pop(); g_cp_buffer_psm1.pop(); }
+            { g_js_buffer_psm1.pop(); g_cp_buffer_psm1.pop(); g_lcp_buffer_psm1.pop();}
             if (g_record_psm2)
-            { g_js_buffer_psm2.pop(); g_cp_buffer_psm2.pop(); }
+            { g_js_buffer_psm2.pop(); g_cp_buffer_psm2.pop(); g_lcp_buffer_psm2.pop();}
             if (g_record_ecm)
-            { g_js_buffer_ecm.pop();  g_cp_buffer_ecm.pop();  }
+            { g_js_buffer_ecm.pop();  g_cp_buffer_ecm.pop();  g_lcp_buffer_ecm.pop();}
 
             if (g_record_cv && g_record_psm1) g_cv_buffer_psm1.pop();
             if (g_record_cv && g_record_psm2) g_cv_buffer_psm2.pop();
@@ -801,9 +885,9 @@ void syncThread() {
             if (g_use_side_image)  consider_stamp(side_img.stamp);
             if (g_use_right_image) consider_stamp(right_img.stamp);
 
-            if (g_record_psm1){ consider_stamp(js1.stamp);  consider_stamp(cp1.stamp); }
-            if (g_record_psm2){ consider_stamp(js2.stamp);  consider_stamp(cp2.stamp); }
-            if (g_record_ecm ){ consider_stamp(js3.stamp);  consider_stamp(cp3.stamp); }
+            if (g_record_psm1){ consider_stamp(js1.stamp);  consider_stamp(cp1.stamp); consider_stamp(lcp1.stamp);}
+            if (g_record_psm2){ consider_stamp(js2.stamp);  consider_stamp(cp2.stamp); consider_stamp(lcp2.stamp);}
+            if (g_record_ecm ){ consider_stamp(js3.stamp);  consider_stamp(cp3.stamp); consider_stamp(lcp3.stamp);}
 
             if (g_record_cv && g_record_psm1) consider_stamp(cv1.stamp);
             if (g_record_cv && g_record_psm2) consider_stamp(cv2.stamp);
@@ -823,6 +907,11 @@ void syncThread() {
 
             else if (g_record_cv && g_record_psm1 && cv1.stamp == oldest_stamp) g_cv_buffer_psm1.pop();
             else if (g_record_cv && g_record_psm2 && cv2.stamp == oldest_stamp) g_cv_buffer_psm2.pop();
+
+            else if (g_record_psm1 && lcp1.stamp == oldest_stamp) g_lcp_buffer_psm1.pop();
+            else if (g_record_psm2 && lcp2.stamp == oldest_stamp) g_lcp_buffer_psm2.pop();
+            else if (g_record_ecm  && lcp3.stamp == oldest_stamp) g_lcp_buffer_ecm.pop();
+
         }
 
     }
@@ -949,7 +1038,7 @@ void writerThread() {
             {
                 Json::Value cart_vel(Json::arrayValue);
                 for (double v : packet.cv_psm1.velocity) cart_vel.append(v);
-                meas_cp["cartesian_velocity"] = cart_vel;
+                meas_cp["velocity"] = cart_vel;
             }
 
             Json::Value measured_block;
@@ -957,26 +1046,51 @@ void writerThread() {
             measured_block["cp"] = meas_cp;
 
 
-            Json::Value arm_set;
-            if (!packet.sp_psm1.position.empty()) {
+            Json::Value set_js, set_cp;
+            /* --- set_js（joint space）--- */
+            if (!packet.sp_js_psm1.position.empty()) {
                 Json::Value pos(Json::arrayValue);
-                for (auto &p : packet.sp_psm1.position) { pos.append(p); }
-                arm_set["position"] = pos;
-
-                if (!packet.sp_psm1.orientation.empty()) {
-                    Json::Value ori(Json::arrayValue);
-                    for (auto &o : packet.sp_psm1.orientation) { ori.append(o); }
-                    arm_set["orientation"] = ori;
-                }
+                for (double p : packet.sp_js_psm1.position) pos.append(p);
+                set_js["position"] = pos;
 
                 Json::Value vel(Json::arrayValue);
-                for (auto &v : packet.sp_psm1.velocity) { vel.append(v); }
-                arm_set["velocity"] = vel;
+                for (double v : packet.sp_js_psm1.velocity) vel.append(v);
+                set_js["velocity"] = vel;
 
                 Json::Value eff(Json::arrayValue);
-                for (auto &e : packet.sp_psm1.effort) { eff.append(e); }
-                arm_set["effort"] = eff;
+                for (double e : packet.sp_js_psm1.effort)  eff.append(e);
+                set_js["effort"] = eff;
             }
+
+            /* --- set_cp（cartesian space）--- */
+            if (!packet.sp_cp_psm1.position.empty()) {
+                Json::Value pos(Json::arrayValue);
+                for (double p : packet.sp_cp_psm1.position) pos.append(p);
+                set_cp["position"] = pos;
+            }
+            if (!packet.sp_cp_psm1.orientation.empty()) {
+                Json::Value ori(Json::arrayValue);
+                for (double o : packet.sp_cp_psm1.orientation) ori.append(o);
+                set_cp["orientation"] = ori;
+            }
+
+            Json::Value set_block;
+            set_block["js"] = set_js;
+            set_block["cp"] = set_cp;
+
+            /* -------- local_cp -------- */
+            Json::Value local_cp;
+            if (!packet.lcp_psm1.position.empty()) {
+                Json::Value pos(Json::arrayValue);
+                for (double p : packet.lcp_psm1.position) pos.append(p);
+                local_cp["position"] = pos;
+            }
+            if (!packet.lcp_psm1.orientation.empty()) {
+                Json::Value ori(Json::arrayValue);
+                for (double o : packet.lcp_psm1.orientation) ori.append(o);
+                local_cp["orientation"] = ori;
+}
+
 
             Json::Value jaw_meas;
             if (!packet.jaw_meas_psm1.position.empty()) {
@@ -994,7 +1108,8 @@ void writerThread() {
 
             Json::Value arm_block;
             arm_block["measured_data"] = measured_block;
-            arm_block["setpoint_data"] = arm_set;
+            arm_block["setpoint_data"] = set_block;
+            arm_block["local_cp"]      = local_cp; 
 
             Json::Value jaw_block;
             jaw_block["measured_data"] = jaw_meas;
@@ -1054,33 +1169,58 @@ void writerThread() {
             {
                 Json::Value cart_vel(Json::arrayValue);
                 for (double v : packet.cv_psm2.velocity) cart_vel.append(v);
-                meas_cp["cartesian_velocity"] = cart_vel;
+                meas_cp["velocity"] = cart_vel;
             }
 
             Json::Value measured_block;
             measured_block["js"] = meas_js;
             measured_block["cp"] = meas_cp;
 
-            Json::Value arm_set;
-            if (!packet.sp_psm2.position.empty()) {
+            Json::Value set_js, set_cp;
+            /* --- set_js（joint space）--- */
+            if (!packet.sp_js_psm2.position.empty()) {
                 Json::Value pos(Json::arrayValue);
-                for (auto &p : packet.sp_psm2.position) { pos.append(p); }
-                arm_set["position"] = pos;
-
-                if (!packet.sp_psm2.orientation.empty()) {
-                    Json::Value ori(Json::arrayValue);
-                    for (auto &o : packet.sp_psm2.orientation) { ori.append(o); }
-                    arm_set["orientation"] = ori;
-                }
+                for (double p : packet.sp_js_psm2.position) pos.append(p);
+                set_js["position"] = pos;
 
                 Json::Value vel(Json::arrayValue);
-                for (auto &v : packet.sp_psm2.velocity) { vel.append(v); }
-                arm_set["velocity"] = vel;
+                for (double v : packet.sp_js_psm2.velocity) vel.append(v);
+                set_js["velocity"] = vel;
 
                 Json::Value eff(Json::arrayValue);
-                for (auto &e : packet.sp_psm2.effort) { eff.append(e); }
-                arm_set["effort"] = eff;
+                for (double e : packet.sp_js_psm2.effort)  eff.append(e);
+                set_js["effort"] = eff;
             }
+
+            /* --- set_cp（cartesian space）--- */
+            if (!packet.sp_cp_psm2.position.empty()) {
+                Json::Value pos(Json::arrayValue);
+                for (double p : packet.sp_cp_psm2.position) pos.append(p);
+                set_cp["position"] = pos;
+            }
+            if (!packet.sp_cp_psm2.orientation.empty()) {
+                Json::Value ori(Json::arrayValue);
+                for (double o : packet.sp_cp_psm2.orientation) ori.append(o);
+                set_cp["orientation"] = ori;
+            }
+
+            Json::Value set_block;
+            set_block["js"] = set_js;
+            set_block["cp"] = set_cp;
+
+            /* -------- local_cp -------- */
+            Json::Value local_cp;
+            if (!packet.lcp_psm2.position.empty()) {
+                Json::Value pos(Json::arrayValue);
+                for (double p : packet.lcp_psm2.position) pos.append(p);
+                local_cp["position"] = pos;
+            }
+            if (!packet.lcp_psm2.orientation.empty()) {
+                Json::Value ori(Json::arrayValue);
+                for (double o : packet.lcp_psm2.orientation) ori.append(o);
+                local_cp["orientation"] = ori;
+            }
+
 
             Json::Value jaw_meas;
             if (!packet.jaw_meas_psm2.position.empty()) {
@@ -1098,7 +1238,8 @@ void writerThread() {
 
             Json::Value arm_block;
             arm_block["measured_data"] = measured_block;
-            arm_block["setpoint_data"] = arm_set;
+            arm_block["setpoint_data"] = set_block;
+            arm_block["local_cp"]      = local_cp; 
 
             Json::Value jaw_block;
             jaw_block["measured_data"] = jaw_meas;
@@ -1161,30 +1302,67 @@ void writerThread() {
             measured_block["js"] = meas_js;
             measured_block["cp"] = meas_cp;
 
-            Json::Value setp;
-            if (!packet.sp_ecm.position.empty()) {
+            /* ---------- set-point (JS / CP) ---------- */
+            Json::Value set_js, set_cp;
+
+            /* JS (set_js) */
+            if (!packet.sp_js_ecm.position.empty())
+            {
                 Json::Value pos(Json::arrayValue);
-                for (auto &p : packet.sp_ecm.position) { pos.append(p); }
-                setp["position"] = pos;
-
-                if (!packet.sp_ecm.orientation.empty()) {
-                    Json::Value ori(Json::arrayValue);
-                    for (auto &o : packet.sp_ecm.orientation) { ori.append(o); }
-                    setp["orientation"] = ori;
-                }
-
-                Json::Value vel(Json::arrayValue);
-                for (auto &v : packet.sp_ecm.velocity) { vel.append(v); }
-                setp["velocity"] = vel;
-
-                Json::Value eff(Json::arrayValue);
-                for (auto &e : packet.sp_ecm.effort) { eff.append(e); }
-                setp["effort"] = eff;
+                for (double p : packet.sp_js_ecm.position) pos.append(p);
+                set_js["position"] = pos;
             }
+            if (!packet.sp_js_ecm.velocity.empty())
+            {
+                Json::Value vel(Json::arrayValue);
+                for (double v : packet.sp_js_ecm.velocity) vel.append(v);
+                set_js["velocity"] = vel;
+            }
+            if (!packet.sp_js_ecm.effort.empty())
+            {
+                Json::Value eff(Json::arrayValue);
+                for (double e : packet.sp_js_ecm.effort) eff.append(e);
+                set_js["effort"] = eff;
+            }
+
+            /* CP (set_cp) */
+            if (!packet.sp_cp_ecm.position.empty())
+            {
+                Json::Value pos(Json::arrayValue);
+                for (double p : packet.sp_cp_ecm.position) pos.append(p);
+                set_cp["position"] = pos;
+            }
+            if (!packet.sp_cp_ecm.orientation.empty())
+            {
+                Json::Value ori(Json::arrayValue);
+                for (double o : packet.sp_cp_ecm.orientation) ori.append(o);
+                set_cp["orientation"] = ori;
+            }
+
+            Json::Value set_block;
+            set_block["js"] = set_js;
+            set_block["cp"] = set_cp;
+
+            /* -------- local_cp -------- */
+            Json::Value local_cp;
+            if (!packet.lcp_ecm.position.empty()) {
+                Json::Value pos(Json::arrayValue);
+                for (double p : packet.lcp_ecm.position) pos.append(p);
+                local_cp["position"] = pos;
+            }
+            if (!packet.lcp_ecm.orientation.empty()) {
+                Json::Value ori(Json::arrayValue);
+                for (double o : packet.lcp_ecm.orientation) ori.append(o);
+                local_cp["orientation"] = ori;
+            }
+
+
+            /* -------- arm_block -------- */
             Json::Value arm_block;
             arm_block["measured_data"] = measured_block;
-            arm_block["setpoint_data"] = setp;
-        
+            arm_block["setpoint_data"] = set_block; 
+            arm_block["local_cp"]      = local_cp; 
+
             root["arm"] = arm_block; 
 
             std::ofstream file(kin_path_ecm);
@@ -1303,16 +1481,45 @@ void reformatDataStorage() {
     std::filesystem::create_directories(base_folder + "/kinematic/ECM");
     std::filesystem::create_directories(base_folder + "/time_syn");
 
+    std::vector<std::filesystem::path> folders;        
+
+    for (const auto &entry : std::filesystem::directory_iterator("recorded_data"))
+    {
+        if (entry.is_directory())
+            folders.emplace_back(entry.path());
+    }
+
+    auto timeLess = [](const std::filesystem::path &a,
+                    const std::filesystem::path &b) -> bool
+    {
+        auto parse = [](const std::string &name) -> std::pair<long long,long long>
+        {
+            const size_t us = name.find('_');
+            long long sec  = std::stoll(name.substr(0, us));
+            long long nsec = (us == std::string::npos) ? 0
+                                                    : std::stoll(name.substr(us + 1));
+            return {sec, nsec};
+        };
+
+        const auto ta = parse(a.filename().string());
+        const auto tb = parse(b.filename().string());
+
+        return  (ta.first  < tb.first)  ||
+            ((ta.first == tb.first) && ta.second < tb.second);
+    };
+    std::sort(folders.begin(), folders.end(), timeLess);
+
+
     int index = 0;
-    for (const auto &entry : std::filesystem::directory_iterator("recorded_data")) {
-        if (entry.is_directory()) {
-            std::string img_left_src   = entry.path().string() + "/image_left.png";
-            std::string img_right_src  = entry.path().string() + "/image_right.png";
-            std::string img_side_src   = entry.path().string() + "/image_side.png";
-            std::string kin_src_psm1   = entry.path().string() + "/kinematics_PSM1.json";
-            std::string kin_src_psm2   = entry.path().string() + "/kinematics_PSM2.json";
-            std::string kin_src_ecm    = entry.path().string() + "/kinematics_ECM.json";
-            std::string time_syn_src   = entry.path().string(); // the entire folder as context
+    for (const auto &dir : folders)  
+         {
+            std::string img_left_src   = dir.string() + "/image_left.png";
+            std::string img_right_src  = dir.string() + "/image_right.png";
+            std::string img_side_src   = dir.string() + "/image_side.png";
+            std::string kin_src_psm1   = dir.string() + "/kinematics_PSM1.json";
+            std::string kin_src_psm2   = dir.string() + "/kinematics_PSM2.json";
+            std::string kin_src_ecm    = dir.string() + "/kinematics_ECM.json";
+            std::string time_syn_src   = dir.string(); // the entire folder as context
 
             std::string img_left_dst   = base_folder + "/image/left/" + std::to_string(index) + ".png";
             std::string img_right_dst  = base_folder + "/image/right/" + std::to_string(index) + ".png";
@@ -1352,7 +1559,7 @@ void reformatDataStorage() {
 
             // Save time info
             Json::Value time_data;
-            time_data["timestamp"] = entry.path().filename().string();
+            time_data["timestamp"] = dir.filename().string();
             std::ofstream file(time_syn_dst);
             if (file) {
                 file << time_data.toStyledString();
@@ -1361,12 +1568,12 @@ void reformatDataStorage() {
 
             index++;
         }
-    }
+}
 
     // De-comment the line below to remove the recorded_data folder!
     // The line is commented below for testing purposes
     // std::filesystem::remove_all("recorded_data");
-}
+
 
 
 
@@ -1417,6 +1624,11 @@ int main(int argc, char** argv) {
     ros::Subscriber jaw_set_sub_psm1;
     ros::Subscriber jaw_set_sub_psm2;
     ros::Subscriber cv_sub_psm1, cv_sub_psm2;
+
+    ros::Subscriber lcp_sub_psm1;
+    ros::Subscriber lcp_sub_psm2;
+    ros::Subscriber lcp_sub_ecm;
+
     // adding in a subscriber for PSM1
     if (g_record_psm1) {
 
@@ -1437,7 +1649,7 @@ int main(int argc, char** argv) {
             std::string jaw_set_topic = "/PSM1/jaw/setpoint_js";
             jaw_set_sub_psm1 = nh.subscribe(jaw_set_topic, 1, jawSetpointJSCallbackPSM1);
 
-
+            lcp_sub_psm1 = nh.subscribe("/PSM1/local/measured_cp", 1, localCPCallbackPSM1);
     }
 
     // adding in a subscriber for PSM2
@@ -1461,6 +1673,8 @@ int main(int argc, char** argv) {
             std::string jaw_set_topic = "/PSM2/jaw/setpoint_js";
             jaw_set_sub_psm2 = nh.subscribe(jaw_set_topic, 1, jawSetpointJSCallbackPSM2);
 
+            lcp_sub_psm2 = nh.subscribe("/PSM2/local/measured_cp", 1, localCPCallbackPSM2);
+
     }
 
     // adding in a subscriber for ECM
@@ -1477,6 +1691,8 @@ int main(int argc, char** argv) {
 
             std::string cp_set_topic_ecm = "/ECM/setpoint_cp";
             cp_set_sub_ecm = nh.subscribe(cp_set_topic_ecm, 1, setpointCPCallbackECM);
+
+            lcp_sub_ecm  = nh.subscribe("/ECM/local/measured_cp", 1,  localCPCallbackECM);
         
     }
 
