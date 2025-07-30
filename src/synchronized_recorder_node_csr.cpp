@@ -21,8 +21,8 @@
 #include <string>
 #include <vector>  // added for writer thread pool
 #include <algorithm>   // for std::sort
-
-
+#include <atomic>   
+#include <deque>  
 
 void printUsage() {
     std::cout << "Usage: rosrun synchronized_recorder synchronized_recorder_node "
@@ -43,6 +43,13 @@ double      g_time_tol          = 0.005;    // default is 5ms tolerance; still u
 
 
 const int NUM_WRITER_THREADS = 4; // number of concurrent writer threads
+
+
+
+constexpr size_t RATE_WINDOW = 100;           
+std::deque<ros::Time> g_psm1_cp_times;        
+std::atomic<double>   g_psm1_cp_rate{0.0}; 
+
 
 // below helper function parses arguments and sets up the problem to do what the user requests
 void parseArguments(int argc, char** argv) {
@@ -396,7 +403,24 @@ void poseCallbackPSM1(const geometry_msgs::PoseStamped::ConstPtr &msg) {
                             msg->pose.orientation.z,
                             msg->pose.orientation.w};
     kin_data.is_cp = true;
+    //hz calculation
+    {
+        g_psm1_cp_times.push_back(msg->header.stamp);
+        if (g_psm1_cp_times.size() > RATE_WINDOW)
+            g_psm1_cp_times.pop_front();
 
+        if (g_psm1_cp_times.size() >= 2)
+        {
+            const auto &t0 = g_psm1_cp_times.front();
+            const auto &tN = g_psm1_cp_times.back();
+            const double dt = (tN - t0).toSec();
+            if (dt > 1e-6)
+            {
+                const double rate = static_cast<double>(g_psm1_cp_times.size() - 1) / dt;
+                g_psm1_cp_rate.store(rate, std::memory_order_relaxed);
+            }
+        }
+    }
     {
         std::lock_guard<std::mutex> lock(g_data_mutex);
         if (g_cp_buffer_psm1.size() > MAX_BUFFER_SIZE) {
@@ -930,20 +954,16 @@ void writerThread() {
 
     while (ros::ok() && g_keep_running) {
         std::unique_lock<std::mutex> lock(g_data_mutex);
-        g_cv.wait(lock, [] {
-            return !g_synced_queue.empty() || !g_keep_running;
-        });
-
-
-        if (!g_keep_running && g_synced_queue.empty()) {
+        g_cv.wait(lock, []{ return !g_synced_queue.empty() || !g_keep_running; });
+    
+        if (!g_keep_running && g_synced_queue.empty())
             break;
-        }
-
-
+    
         SyncedPacket packet = g_synced_queue.front();
         g_synced_queue.pop();
         lock.unlock();
 
+        double psm1_cp_rate_hz = g_psm1_cp_rate.load(std::memory_order_relaxed);
 
         ros::WallTime wall_now = ros::WallTime::now();
         std::ostringstream folder_name;
@@ -951,6 +971,8 @@ void writerThread() {
                     << wall_now.sec << "_"
                     << wall_now.nsec;
         std::string final_folder = folder_name.str();
+        
+        
 
 
         std::error_code ec;
@@ -1001,6 +1023,7 @@ void writerThread() {
         if (g_record_psm1) {
             std::string kin_path_psm1 = final_folder + "/kinematics_PSM1.json";
             Json::Value root;
+            root["measured_cp_hz"] = psm1_cp_rate_hz;   // NEW
             root["header"]["sec"]  = (Json::Value::Int64)packet.cp_psm1.stamp.sec;
             root["header"]["nsec"] = (Json::Value::Int64)packet.cp_psm1.stamp.nsec;
 
@@ -1636,7 +1659,7 @@ int main(int argc, char** argv) {
             js_sub_psm1 = nh.subscribe(js_topic_psm1, 1, jointStateCallback);
 
             std::string cp_topic_psm1 = "/PSM1/measured_cp";
-            cp_sub_psm1 = nh.subscribe(cp_topic_psm1, 1, poseCallbackPSM1);
+            cp_sub_psm1 = nh.subscribe(cp_topic_psm1, 2000, poseCallbackPSM1);
 
             std::string cp_set_topic_psm1 = "/PSM1/setpoint_cp";
             cp_set_sub_psm1 = nh.subscribe(cp_set_topic_psm1, 1, setpointCPCallbackPSM1);
