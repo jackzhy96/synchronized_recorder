@@ -1,6 +1,3 @@
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
 
 # synchronized_recorder
 synchronized recorder for image and kinematic data through ROS
@@ -17,7 +14,6 @@ Kevin Wu, Haoying(Jack) Zhou
 ## IMPORTANT
 With the current script **both PSM1 and PSM2 must be powered on and publishing** (even if you do not intend to save their data).  
 However, the ECM arm is optional and can be toggled with `-a ECM`.
->>>>>>> d38f6e4 (Update README.md)
 
 ## File Structure
 - Source Code: synchronized_recorder_node.cpp
@@ -87,7 +83,6 @@ If a folder is incomplete (e.g., missing image.png or kinematics.json), the fold
 =======
 ## Note!!! With this current script, both PSM1 and PSM2 must be up and running!
 
->>>>>>> 28deae8 (Update README.md)
 # SynchronizedRecorder
 A multi‑threaded ROS node that records, synchronizes, and stores:
 
@@ -232,6 +227,3 @@ After ROS spin shuts down, execute the following post-processing steps:
   Add your new output file generated from `/sample_topic` to both `cleanupFolders()` and `reformatDataStorage()` so incomplete folders are still removed and data storage is formatted nicely.
 
 
-
-
->>>>>>> 7250110 (Update README.md)
