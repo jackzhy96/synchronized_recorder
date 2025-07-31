@@ -166,6 +166,18 @@ target_link_libraries(${PROJECT_NAME}_node
   jsoncpp
 )
 
+
+add_executable(synchronized_recorder_node_csr src/synchronized_recorder_node_csr.cpp)
+target_link_libraries(synchronized_recorder_node_csr
+  ${catkin_LIBRARIES}
+  ${OpenCV_LIBRARIES}
+  jsoncpp
+)
+
+catkin_install_python(
+  PROGRAMS src/suj_topic_recorder.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
 #############
 ## Install ##
 #############

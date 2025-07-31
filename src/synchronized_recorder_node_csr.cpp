@@ -2,16 +2,11 @@
 #include <image_transport/image_transport.h>
 #include <sensor_msgs/Image.h>
 #include <sensor_msgs/JointState.h>
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
-#include <geometry_msgs/PoseStamped.h>   // <-- added for measured_cp
->>>>>>> db74a70 (re-organized file structure)
-=======
 #include <geometry_msgs/PoseStamped.h>   // this used for measured_cp
->>>>>>> 9f44840 (Update synchronized_recorder_node.cpp)
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/opencv.hpp>
+#include <geometry_msgs/TwistStamped.h>   // cv
+#include <cmath>                          
 
 #include <thread>
 #include <mutex>
@@ -21,26 +16,18 @@
 #include <fstream>
 #include <jsoncpp/json/json.h>
 #include <iostream>
-<<<<<<< HEAD
-<<<<<<< HEAD
-#include <map>
-#include <filesystem> // should be C++17
-
-=======
-#include <filesystem> // C++17
->>>>>>> 4754361 (Upload of the script )
-=======
 #include <map>
 #include <filesystem> // should be C++17
 #include <string>
 #include <vector>  // added for writer thread pool
-
-
+#include <algorithm>   // for std::sort
+#include <atomic>   
+#include <deque>  
 
 void printUsage() {
     std::cout << "Usage: rosrun synchronized_recorder synchronized_recorder_node "
               << "-c <camera topic> -m <stereo|mono> [-d <left|right>] "
-              << "-a PSM1 [-a PSM2] [-a ECM] -x <js|cp> -t <time_tolerance_seconds>" << std::endl;
+              << "-a PSM1 [-a PSM2] [-a ECM] -t <time_tolerance_seconds> [-v]  [-s]" << std::endl;
 }
 
 std::string g_camera_topic_base = "test";   // default camera topic base; still user must specify the topic in the argument
@@ -49,25 +36,35 @@ bool        g_use_right_image   = true;     // using right camera?
 bool        g_record_psm1       = true;     // using PSM1 kinematics?
 bool        g_record_psm2       = true;     // using PSM2 kinematics?
 bool        g_record_ecm        = false;    // using ECM  kinematics?
-
-bool        g_use_js            = true;     // true = measured_js, false = measured_cp
+bool        g_record_cv = false;            // measured_cv
+bool        g_use_side_image = false;
 
 double      g_time_tol          = 0.005;    // default is 5ms tolerance; still user must specify the tolerance in the argument
 
 
 const int NUM_WRITER_THREADS = 4; // number of concurrent writer threads
 
+
+
+constexpr size_t RATE_WINDOW = 100;           
+std::deque<ros::Time> g_psm1_cp_times;        
+std::atomic<double>   g_psm1_cp_rate{0.0}; 
+
+
 // below helper function parses arguments and sets up the problem to do what the user requests
 void parseArguments(int argc, char** argv) {
     bool camera_topic_set = false;
     bool camera_mode_set  = false;
     bool time_tol_set     = false;
-    bool kin_type_set     = false;
+    bool cv_set = false;
+    bool side_set = false;
 
     std::vector<std::string> a_params;
     std::string camera_mode_str;
     std::string d_side;
     std::string kin_type_str;
+    
+
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -88,14 +85,19 @@ void parseArguments(int argc, char** argv) {
             if (i + 1 < argc) { a_params.emplace_back(argv[++i]); }
             else { printUsage(); exit(EXIT_FAILURE); }
         }
-        else if (arg == "-x") {
-            if (i + 1 < argc) { kin_type_str = argv[++i]; kin_type_set = true; }
-            else { printUsage(); exit(EXIT_FAILURE); }
-        }
         else if (arg == "-t") {
             if (i + 1 < argc) { g_time_tol = std::stod(argv[++i]); time_tol_set = true; }
             else { printUsage(); exit(EXIT_FAILURE); }
         }
+        else if (arg == "-v") {
+            g_record_cv = true;
+            cv_set = true;
+        }
+        else if (arg == "-s") {          
+            g_use_side_image = true;
+            side_set = true;
+        }
+        
         else {
             printUsage(); exit(EXIT_FAILURE);
         }
@@ -103,7 +105,7 @@ void parseArguments(int argc, char** argv) {
 
     // give user warning that some required arg is missing
     // also give the correct arg format
-    if (!camera_topic_set || !camera_mode_set || !time_tol_set || !kin_type_set) {
+    if (!camera_topic_set || !camera_mode_set || !time_tol_set ) {
         std::cerr << "Error: Missing required parameter(s)." << std::endl;
         printUsage();
         exit(EXIT_FAILURE);
@@ -166,37 +168,18 @@ void parseArguments(int argc, char** argv) {
         }
     }
 
-    // kinematic type handling; js or cp?
-    if (kin_type_str == "js") {
-        g_use_js = true;
-    } else if (kin_type_str == "cp") {
-        g_use_js = false;
-    } else {
-        std::cerr << "Error: -x must be 'js' or 'cp'." << std::endl;
-        printUsage();
-        exit(EXIT_FAILURE);
-    }
 }
 
->>>>>>> db74a70 (re-organized file structure)
 
 struct KinematicData {
     ros::Time stamp;
     std::vector<double> position;
-<<<<<<< HEAD
-    std::vector<double> velocity;
-    std::vector<double> effort;
-};
-
-<<<<<<< HEAD
-=======
     std::vector<double> orientation;   // populated for cp
     std::vector<double> velocity;
     std::vector<double> effort;
     bool is_cp = false;                // true if data stream is coming from measured_cp
 };
 
->>>>>>> db74a70 (re-organized file structure)
 
 
 struct ImageData {
@@ -210,26 +193,23 @@ struct SyncedPacket {
     ros::Time        stamp;       // reference timestamp (from the matched data)
     ImageData        left_img;
     ImageData        right_img;
-    KinematicData    kin_psm1;
-    KinematicData    kin_psm2;
-<<<<<<< HEAD
-=======
-    KinematicData    kin_ecm;
-<<<<<<< HEAD
->>>>>>> db74a70 (re-organized file structure)
-=======
-    KinematicData    sp_psm1;
-    KinematicData    sp_psm2;
-    KinematicData    sp_ecm;
+    KinematicData    js_psm1, cp_psm1;
+    KinematicData    js_psm2, cp_psm2;
+    KinematicData    js_ecm , cp_ecm;
+    KinematicData    sp_js_psm1, sp_cp_psm1;
+    KinematicData    sp_js_psm2, sp_cp_psm2;
+    KinematicData    sp_js_ecm , sp_cp_ecm;
+    KinematicData    lcp_psm1;   // local measured_cp  
+    KinematicData    lcp_psm2;   // local measured_cp
+    KinematicData    lcp_ecm;    // local measured_cp
     KinematicData    jaw_meas_psm1;    // jaw streams
     KinematicData    jaw_set_psm1;
     KinematicData    jaw_meas_psm2;
     KinematicData    jaw_set_psm2;
-<<<<<<< HEAD
->>>>>>> 81c542e (Update synchronized_recorder_node.cpp)
-=======
+    KinematicData    cv_psm1;
+    KinematicData    cv_psm2;
+    ImageData        side_img; 
     // note: jaw data is not available for ECM!
->>>>>>> 9f44840 (Update synchronized_recorder_node.cpp)
 };
 
 
@@ -239,23 +219,29 @@ bool                    g_keep_running = true;
 
 
 // buffers for left image, right image, and kinematics
-<<<<<<< HEAD
-std::queue<ImageData>    g_left_image_buffer;
-std::queue<ImageData>    g_right_image_buffer;
-std::queue<KinematicData> g_kinematic_buffer;
-std::queue<KinematicData> g_kinematic_buffer_psm2;
-=======
 std::queue<ImageData>     g_left_image_buffer;
 std::queue<ImageData>     g_right_image_buffer;
-std::queue<KinematicData> g_kinematic_buffer;
-std::queue<KinematicData> g_kinematic_buffer_psm2;
-std::queue<KinematicData> g_kinematic_buffer_ecm;
->>>>>>> db74a70 (re-organized file structure)
+std::queue<ImageData>     g_side_image_buffer;
+
+
+std::queue<KinematicData> g_js_buffer_psm1, g_cp_buffer_psm1;
+std::queue<KinematicData> g_js_buffer_psm2, g_cp_buffer_psm2;
+std::queue<KinematicData> g_js_buffer_ecm , g_cp_buffer_ecm;
+
+std::queue<KinematicData> g_lcp_buffer_psm1;
+std::queue<KinematicData> g_lcp_buffer_psm2;
+std::queue<KinematicData> g_lcp_buffer_ecm;
+
+std::queue<KinematicData> g_cv_buffer_psm1;
+std::queue<KinematicData> g_cv_buffer_psm2;
 
 // latest setpoint snapshots
-KinematicData g_setpoint_psm1;
-KinematicData g_setpoint_psm2;
-KinematicData g_setpoint_ecm;
+
+KinematicData g_setpoint_js_psm1, g_setpoint_cp_psm1;
+KinematicData g_setpoint_js_psm2, g_setpoint_cp_psm2;
+KinematicData g_setpoint_js_ecm , g_setpoint_cp_ecm ;
+
+
 
 // latest jaw snapshots
 KinematicData g_jaw_meas_psm1;
@@ -272,10 +258,6 @@ std::queue<SyncedPacket> g_synced_queue;
 // this script's processing speed is capped by the hardware that you're running it on. 
 const size_t MAX_BUFFER_SIZE         = 1000;     // 
 const size_t MAX_SYNCED_QUEUE_SIZE   = 100;      // queue for writing synced data
-<<<<<<< HEAD
-const double TIME_TOL                = 0.005;    // 5ms tolerance
-=======
->>>>>>> db74a70 (re-organized file structure)
 
 
 // create separate call back function for left  stereo camera
@@ -291,51 +273,10 @@ void imageCallbackLeft(const sensor_msgs::ImageConstPtr &msg) {
     }
 
 
-<<<<<<< HEAD
-=======
-struct ImageData {
-    ros::Time stamp;
-    cv::Mat image;
-};
-
-// Shared Data
-std::mutex g_data_mutex;
-std::condition_variable g_cv;
-bool g_data_ready = false;
-bool g_keep_running = true;
-
-std::queue<ImageData> g_image_buffer;
-std::queue<KinematicData> g_kinematic_buffer;
-
-ImageData g_synced_image;
-KinematicData g_synced_kinematic;
-
-int g_writers_done = 0;  // How many writers have finished writing the current pair
-std::string g_synced_folder;
-
-const size_t MAX_BUFFER_SIZE = 100;
-const double TIME_TOL = 0.0005;   // 1ms tolerance
-
-void imageCallback(const sensor_msgs::ImageConstPtr &msg) {
-    cv_bridge::CvImageConstPtr cv_ptr;
-    try {
-        cv_ptr = cv_bridge::toCvShare(msg);
-    } catch (cv_bridge::Exception &e) {
-        ROS_ERROR("cv_bridge exception: %s", e.what());
-        return;
-    }
-
->>>>>>> 4754361 (Upload of the script )
-=======
->>>>>>> db74a70 (re-organized file structure)
     ImageData img_data;
     img_data.stamp = msg->header.stamp;
     img_data.image = cv_ptr->image.clone();
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> db74a70 (re-organized file structure)
 
     {
         std::lock_guard<std::mutex> lock(g_data_mutex);
@@ -376,6 +317,15 @@ void imageCallbackRight(const sensor_msgs::ImageConstPtr &msg) {
 
 
 }
+void imageCallbackSide(const sensor_msgs::ImageConstPtr& msg) {
+    
+    ImageData d;
+    d.stamp  = msg->header.stamp;
+    d.image  = cv_bridge::toCvShare(msg)->image.clone();
+    std::lock_guard<std::mutex> lk(g_data_mutex);
+    if (g_side_image_buffer.size() > MAX_BUFFER_SIZE) g_side_image_buffer.pop();
+    g_side_image_buffer.push(d);
+}
 
 // get kinematic for PSM1
 void jointStateCallback(const sensor_msgs::JointState::ConstPtr &msg) {
@@ -386,38 +336,13 @@ void jointStateCallback(const sensor_msgs::JointState::ConstPtr &msg) {
     kin_data.effort   = msg->effort;
 
     
-<<<<<<< HEAD
-=======
     {
         std::lock_guard<std::mutex> lock(g_data_mutex);
-        if (g_image_buffer.size() > MAX_BUFFER_SIZE) {
-            g_image_buffer.pop();
+        if (g_js_buffer_psm1.size() > MAX_BUFFER_SIZE) {
+            g_js_buffer_psm1.pop();
         }
-        g_image_buffer.push(img_data);
-    }
-}
 
-void jointStateCallback(const sensor_msgs::JointState::ConstPtr &msg) {
-    KinematicData kin_data;
-    kin_data.stamp = msg->header.stamp;
-    kin_data.position = msg->position;
-    kin_data.velocity = msg->velocity;
-    kin_data.effort = msg->effort;
-
->>>>>>> 4754361 (Upload of the script )
-=======
->>>>>>> db74a70 (re-organized file structure)
-    {
-        std::lock_guard<std::mutex> lock(g_data_mutex);
-        if (g_kinematic_buffer.size() > MAX_BUFFER_SIZE) {
-            g_kinematic_buffer.pop();
-        }
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> db74a70 (re-organized file structure)
-
-        g_kinematic_buffer.push(kin_data);
+        g_js_buffer_psm1.push(kin_data);
     }
 
 
@@ -434,18 +359,16 @@ void jointStateCallbackPSM2(const sensor_msgs::JointState::ConstPtr &msg) {
 
     {
         std::lock_guard<std::mutex> lock(g_data_mutex);
-        if (g_kinematic_buffer_psm2.size() > MAX_BUFFER_SIZE) {
-            g_kinematic_buffer_psm2.pop();
+        if (g_js_buffer_psm2.size() > MAX_BUFFER_SIZE) {
+            g_js_buffer_psm2.pop();
         }
         
-        g_kinematic_buffer_psm2.push(kin_data);
+        g_js_buffer_psm2.push(kin_data);
     }
 
 
 }
 
-<<<<<<< HEAD
-=======
 // note: the function below handles ECM.
 void jointStateCallbackECM(const sensor_msgs::JointState::ConstPtr &msg) {
     KinematicData kin_data;
@@ -457,11 +380,11 @@ void jointStateCallbackECM(const sensor_msgs::JointState::ConstPtr &msg) {
 
     {
         std::lock_guard<std::mutex> lock(g_data_mutex);
-        if (g_kinematic_buffer_ecm.size() > MAX_BUFFER_SIZE) {
-            g_kinematic_buffer_ecm.pop();
+        if (g_js_buffer_ecm.size() > MAX_BUFFER_SIZE) {
+            g_js_buffer_ecm.pop();
         }
         
-        g_kinematic_buffer_ecm.push(kin_data);
+        g_js_buffer_ecm.push(kin_data);
     }
 }
 
@@ -480,13 +403,30 @@ void poseCallbackPSM1(const geometry_msgs::PoseStamped::ConstPtr &msg) {
                             msg->pose.orientation.z,
                             msg->pose.orientation.w};
     kin_data.is_cp = true;
+    //hz calculation
+    {
+        g_psm1_cp_times.push_back(msg->header.stamp);
+        if (g_psm1_cp_times.size() > RATE_WINDOW)
+            g_psm1_cp_times.pop_front();
 
+        if (g_psm1_cp_times.size() >= 2)
+        {
+            const auto &t0 = g_psm1_cp_times.front();
+            const auto &tN = g_psm1_cp_times.back();
+            const double dt = (tN - t0).toSec();
+            if (dt > 1e-6)
+            {
+                const double rate = static_cast<double>(g_psm1_cp_times.size() - 1) / dt;
+                g_psm1_cp_rate.store(rate, std::memory_order_relaxed);
+            }
+        }
+    }
     {
         std::lock_guard<std::mutex> lock(g_data_mutex);
-        if (g_kinematic_buffer.size() > MAX_BUFFER_SIZE) {
-            g_kinematic_buffer.pop();
+        if (g_cp_buffer_psm1.size() > MAX_BUFFER_SIZE) {
+            g_cp_buffer_psm1.pop();
         }
-        g_kinematic_buffer.push(kin_data);
+        g_cp_buffer_psm1.push(kin_data);
     }
 }
 
@@ -504,10 +444,10 @@ void poseCallbackPSM2(const geometry_msgs::PoseStamped::ConstPtr &msg) {
 
     {
         std::lock_guard<std::mutex> lock(g_data_mutex);
-        if (g_kinematic_buffer_psm2.size() > MAX_BUFFER_SIZE) {
-            g_kinematic_buffer_psm2.pop();
+        if (g_cp_buffer_psm2.size() > MAX_BUFFER_SIZE) {
+            g_cp_buffer_psm2.pop();
         }
-        g_kinematic_buffer_psm2.push(kin_data);
+        g_cp_buffer_psm2.push(kin_data);
     }
 }
 
@@ -525,91 +465,163 @@ void poseCallbackECM(const geometry_msgs::PoseStamped::ConstPtr &msg) {
 
     {
         std::lock_guard<std::mutex> lock(g_data_mutex);
-        if (g_kinematic_buffer_ecm.size() > MAX_BUFFER_SIZE) {
-            g_kinematic_buffer_ecm.pop();
+        if (g_cp_buffer_ecm.size() > MAX_BUFFER_SIZE) {
+            g_cp_buffer_ecm.pop();
         }
-        g_kinematic_buffer_ecm.push(kin_data);
+        g_cp_buffer_ecm.push(kin_data);
     }
 }
 
 
->>>>>>> db74a70 (re-organized file structure)
+void localCPCallbackPSM1(const geometry_msgs::PoseStamped::ConstPtr &msg)
+{
+    KinematicData kd;
+    kd.stamp      = msg->header.stamp;
+    kd.position   = {msg->pose.position.x,
+                     msg->pose.position.y,
+                     msg->pose.position.z};
+    kd.orientation= {msg->pose.orientation.x,
+                     msg->pose.orientation.y,
+                     msg->pose.orientation.z,
+                     msg->pose.orientation.w};
+    kd.is_cp = true;
+
+    std::lock_guard<std::mutex> lk(g_data_mutex);
+    if (g_lcp_buffer_psm1.size() > MAX_BUFFER_SIZE) g_lcp_buffer_psm1.pop();
+    g_lcp_buffer_psm1.push(kd);
+}
+void localCPCallbackPSM2(const geometry_msgs::PoseStamped::ConstPtr &msg)
+{
+    KinematicData kd;
+    kd.stamp      = msg->header.stamp;
+    kd.position   = {msg->pose.position.x,
+                     msg->pose.position.y,
+                     msg->pose.position.z};
+    kd.orientation= {msg->pose.orientation.x,
+                     msg->pose.orientation.y,
+                     msg->pose.orientation.z,
+                     msg->pose.orientation.w};
+    kd.is_cp = true;
+
+    std::lock_guard<std::mutex> lk(g_data_mutex);
+    if (g_lcp_buffer_psm2.size() > MAX_BUFFER_SIZE) g_lcp_buffer_psm2.pop();
+    g_lcp_buffer_psm2.push(kd);
+}
+void localCPCallbackECM(const geometry_msgs::PoseStamped::ConstPtr &msg)
+{
+    KinematicData kd;
+    kd.stamp      = msg->header.stamp;
+    kd.position   = {msg->pose.position.x,
+                     msg->pose.position.y,
+                     msg->pose.position.z};
+    kd.orientation= {msg->pose.orientation.x,
+                     msg->pose.orientation.y,
+                     msg->pose.orientation.z,
+                     msg->pose.orientation.w};
+    kd.is_cp = true;
+
+    std::lock_guard<std::mutex> lk(g_data_mutex);
+    if (g_lcp_buffer_ecm.size() > MAX_BUFFER_SIZE) g_lcp_buffer_ecm.pop();
+    g_lcp_buffer_ecm.push(kd);
+}
+
+
+void cvCallbackPSM2(const geometry_msgs::TwistStamped::ConstPtr &msg){
+    KinematicData kd;
+    kd.stamp = msg->header.stamp;
+    kd.velocity = { msg->twist.linear.x, msg->twist.linear.y, msg->twist.linear.z,
+                    msg->twist.angular.x, msg->twist.angular.y, msg->twist.angular.z };
+    kd.is_cp = false;   // reuse 标志
+    std::lock_guard<std::mutex> lk(g_data_mutex);
+    if (g_cv_buffer_psm2.size() > MAX_BUFFER_SIZE) g_cv_buffer_psm2.pop();
+    g_cv_buffer_psm2.push(kd);
+}
+void cvCallbackPSM1(const geometry_msgs::TwistStamped::ConstPtr &msg){
+    KinematicData kd;
+    kd.stamp = msg->header.stamp;
+    kd.velocity = { msg->twist.linear.x, msg->twist.linear.y, msg->twist.linear.z,
+                    msg->twist.angular.x, msg->twist.angular.y, msg->twist.angular.z };
+    kd.is_cp = false;   // reuse 标志
+    std::lock_guard<std::mutex> lk(g_data_mutex);
+    if (g_cv_buffer_psm1.size() > MAX_BUFFER_SIZE) g_cv_buffer_psm1.pop();
+    g_cv_buffer_psm1.push(kd);
+}
 
 // ------------------- below functions are callbacks for setpoint streams -------------------
 
 void setpointJSCallbackPSM1(const sensor_msgs::JointState::ConstPtr &msg) {
     std::lock_guard<std::mutex> lock(g_data_mutex);
-    g_setpoint_psm1.stamp     = msg->header.stamp;
-    g_setpoint_psm1.position  = msg->position;
-    g_setpoint_psm1.velocity  = msg->velocity;
-    g_setpoint_psm1.effort    = msg->effort;
-    g_setpoint_psm1.orientation.clear();
-    g_setpoint_psm1.is_cp = false;
+    g_setpoint_js_psm1.stamp     = msg->header.stamp;
+    g_setpoint_js_psm1.position  = msg->position;
+    g_setpoint_js_psm1.velocity  = msg->velocity;
+    g_setpoint_js_psm1.effort    = msg->effort;
+    g_setpoint_js_psm1.orientation.clear();
+    g_setpoint_js_psm1.is_cp = false;
 }
 
 void setpointJSCallbackPSM2(const sensor_msgs::JointState::ConstPtr &msg) {
     std::lock_guard<std::mutex> lock(g_data_mutex);
-    g_setpoint_psm2.stamp     = msg->header.stamp;
-    g_setpoint_psm2.position  = msg->position;
-    g_setpoint_psm2.velocity  = msg->velocity;
-    g_setpoint_psm2.effort    = msg->effort;
-    g_setpoint_psm2.orientation.clear();
-    g_setpoint_psm2.is_cp = false;
+    g_setpoint_js_psm2.stamp     = msg->header.stamp;
+    g_setpoint_js_psm2.position  = msg->position;
+    g_setpoint_js_psm2.velocity  = msg->velocity;
+    g_setpoint_js_psm2.effort    = msg->effort;
+    g_setpoint_js_psm2.orientation.clear();
+    g_setpoint_js_psm2.is_cp = false;
 }
 
 void setpointJSCallbackECM(const sensor_msgs::JointState::ConstPtr &msg) {
     std::lock_guard<std::mutex> lock(g_data_mutex);
-    g_setpoint_ecm.stamp     = msg->header.stamp;
-    g_setpoint_ecm.position  = msg->position;
-    g_setpoint_ecm.velocity  = msg->velocity;
-    g_setpoint_ecm.effort    = msg->effort;
-    g_setpoint_ecm.orientation.clear();
-    g_setpoint_ecm.is_cp = false;
+    g_setpoint_js_ecm.stamp     = msg->header.stamp;
+    g_setpoint_js_ecm.position  = msg->position;
+    g_setpoint_js_ecm.velocity  = msg->velocity;
+    g_setpoint_js_ecm.effort    = msg->effort;
+    g_setpoint_js_ecm.orientation.clear();
+    g_setpoint_js_ecm.is_cp = false;
 }
 
 void setpointCPCallbackPSM1(const geometry_msgs::PoseStamped::ConstPtr &msg) {
     std::lock_guard<std::mutex> lock(g_data_mutex);
-    g_setpoint_psm1.stamp = msg->header.stamp;
-    g_setpoint_psm1.position = {msg->pose.position.x,
+    g_setpoint_cp_psm1.stamp = msg->header.stamp;
+    g_setpoint_cp_psm1.position = {msg->pose.position.x,
                                 msg->pose.position.y,
                                 msg->pose.position.z};
-    g_setpoint_psm1.orientation = {msg->pose.orientation.x,
+    g_setpoint_cp_psm1.orientation = {msg->pose.orientation.x,
                                    msg->pose.orientation.y,
                                    msg->pose.orientation.z,
                                    msg->pose.orientation.w};
-    g_setpoint_psm1.velocity.clear();
-    g_setpoint_psm1.effort.clear();
-    g_setpoint_psm1.is_cp = true;
+    g_setpoint_cp_psm1.velocity.clear();
+    g_setpoint_cp_psm1.effort.clear();
+    g_setpoint_cp_psm1.is_cp = true;
 }
 
 void setpointCPCallbackPSM2(const geometry_msgs::PoseStamped::ConstPtr &msg) {
     std::lock_guard<std::mutex> lock(g_data_mutex);
-    g_setpoint_psm2.stamp = msg->header.stamp;
-    g_setpoint_psm2.position = {msg->pose.position.x,
+    g_setpoint_cp_psm2.stamp = msg->header.stamp;
+    g_setpoint_cp_psm2.position = {msg->pose.position.x,
                                 msg->pose.position.y,
                                 msg->pose.position.z};
-    g_setpoint_psm2.orientation = {msg->pose.orientation.x,
+    g_setpoint_cp_psm2.orientation = {msg->pose.orientation.x,
                                    msg->pose.orientation.y,
                                    msg->pose.orientation.z,
                                    msg->pose.orientation.w};
-    g_setpoint_psm2.velocity.clear();
-    g_setpoint_psm2.effort.clear();
-    g_setpoint_psm2.is_cp = true;
+    g_setpoint_cp_psm2.velocity.clear();
+    g_setpoint_cp_psm2.effort.clear();
+    g_setpoint_cp_psm2.is_cp = true;
 }
 
 void setpointCPCallbackECM(const geometry_msgs::PoseStamped::ConstPtr &msg) {
     std::lock_guard<std::mutex> lock(g_data_mutex);
-    g_setpoint_ecm.stamp = msg->header.stamp;
-    g_setpoint_ecm.position = {msg->pose.position.x,
+    g_setpoint_cp_ecm.stamp = msg->header.stamp;
+    g_setpoint_cp_ecm.position = {msg->pose.position.x,
                                msg->pose.position.y,
                                msg->pose.position.z};
-    g_setpoint_ecm.orientation = {msg->pose.orientation.x,
+    g_setpoint_cp_ecm.orientation = {msg->pose.orientation.x,
                                   msg->pose.orientation.y,
                                   msg->pose.orientation.z,
                                   msg->pose.orientation.w};
-    g_setpoint_ecm.velocity.clear();
-    g_setpoint_ecm.effort.clear();
-    g_setpoint_ecm.is_cp = true;
+    g_setpoint_cp_ecm.velocity.clear();
+    g_setpoint_cp_ecm.effort.clear();
+    g_setpoint_cp_ecm.is_cp = true;
 }
 
 
@@ -729,90 +741,96 @@ void syncThread() {
         std::lock_guard<std::mutex> lock(g_data_mutex);
 
 
-        if (g_synced_queue.size() >= MAX_SYNCED_QUEUE_SIZE) {
-            // drop the oldest data from input buffers
-
-<<<<<<< HEAD
-            if (!g_left_image_buffer.empty())    g_left_image_buffer.pop();
-            if (!g_right_image_buffer.empty())   g_right_image_buffer.pop();
-            if (!g_kinematic_buffer.empty())     g_kinematic_buffer.pop();
-            if (!g_kinematic_buffer_psm2.empty()) g_kinematic_buffer_psm2.pop();
-=======
-            if (g_use_left_image  && !g_left_image_buffer.empty())     g_left_image_buffer.pop();
-            if (g_use_right_image && !g_right_image_buffer.empty())    g_right_image_buffer.pop();
-            if (g_record_psm1     && !g_kinematic_buffer.empty())      g_kinematic_buffer.pop();
-            if (g_record_psm2     && !g_kinematic_buffer_psm2.empty()) g_kinematic_buffer_psm2.pop();
-            if (g_record_ecm      && !g_kinematic_buffer_ecm.empty())  g_kinematic_buffer_ecm.pop();
->>>>>>> db74a70 (re-organized file structure)
-            continue;
-
-
-        }
-
-<<<<<<< HEAD
-        // if any buffer is empty, can't sync
-        if (g_left_image_buffer.empty() ||
-            g_right_image_buffer.empty() ||
-            g_kinematic_buffer.empty() ||            // PSM1
-            g_kinematic_buffer_psm2.empty()) {       // PSM2
-=======
-        // if any required buffer is empty, can't sync
-        if ((g_use_left_image  && g_left_image_buffer.empty())  ||
-            (g_use_right_image && g_right_image_buffer.empty()) ||
-            (g_record_psm1     && g_kinematic_buffer.empty())   ||
-            (g_record_psm2     && g_kinematic_buffer_psm2.empty()) ||
-            (g_record_ecm      && g_kinematic_buffer_ecm.empty())) {
->>>>>>> db74a70 (re-organized file structure)
-            continue;
-        }
-
-        
-<<<<<<< HEAD
-        ImageData     left_img  = g_left_image_buffer.front();
-        ImageData     right_img = g_right_image_buffer.front();
-        KinematicData kin1      = g_kinematic_buffer.front();       // PSM1
-        KinematicData kin2      = g_kinematic_buffer_psm2.front();  // PSM2
-
-
-        
-        double time_diff_left  = fabs((left_img.stamp   - kin1.stamp).toSec());
-        double time_diff_right = fabs((right_img.stamp  - kin1.stamp).toSec());
-        double time_diff_kin2  = fabs((kin2.stamp       - kin1.stamp).toSec());
-
-
-
-        if (time_diff_left < TIME_TOL &&
-            time_diff_right < TIME_TOL &&
-            time_diff_kin2 < TIME_TOL) 
+        if (g_synced_queue.size() >= MAX_SYNCED_QUEUE_SIZE)
         {
+            if (g_use_left_image  && !g_left_image_buffer.empty())  g_left_image_buffer.pop();
+            if (g_use_right_image && !g_right_image_buffer.empty()) g_right_image_buffer.pop();
+            if (g_use_side_image  && !g_side_image_buffer.empty())  g_side_image_buffer.pop();
 
+            if (g_record_psm1)
+            {
+                if (!g_js_buffer_psm1.empty()) g_js_buffer_psm1.pop();
+                if (!g_cp_buffer_psm1.empty()) g_cp_buffer_psm1.pop();
+            }
+            if (g_record_psm2)
+            {
+                if (!g_js_buffer_psm2.empty()) g_js_buffer_psm2.pop();
+                if (!g_cp_buffer_psm2.empty()) g_cp_buffer_psm2.pop();
+            }
+            if (g_record_ecm)
+            {
+                if (!g_js_buffer_ecm.empty()) g_js_buffer_ecm.pop();
+                if (!g_cp_buffer_ecm.empty()) g_cp_buffer_ecm.pop();
+            }
+            continue;
+        }
 
-            SyncedPacket packet;
+        // if any required buffer is empty, can't sync
+        bool ready =
+            (!g_use_left_image  || !g_left_image_buffer.empty())  &&
+            (!g_use_right_image || !g_right_image_buffer.empty()) &&
+            (!g_use_side_image  || !g_side_image_buffer.empty())  &&
 
-            packet.stamp     = kin1.stamp; 
-=======
+            (!g_record_psm1 || 
+                (!g_js_buffer_psm1.empty() && !g_cp_buffer_psm1.empty()) && !g_lcp_buffer_psm1.empty())&&
+            (!g_record_psm2 || 
+                (!g_js_buffer_psm2.empty() && !g_cp_buffer_psm2.empty()) && !g_lcp_buffer_psm2.empty())&&
+            (!g_record_ecm  || 
+                (!g_js_buffer_ecm.empty() && !g_cp_buffer_ecm.empty()) && !g_lcp_buffer_ecm.empty())&&
+
+            (!g_record_cv || !g_record_psm1 || !g_cv_buffer_psm1.empty()) &&
+            (!g_record_cv || !g_record_psm2 || !g_cv_buffer_psm2.empty());
+
+        if (!ready)  continue;
+
+        
         ImageData     left_img;
         ImageData     right_img;
-        KinematicData kin1;
-        KinematicData kin2;
-        KinematicData kin3;
+        KinematicData js1, cp1, js2, cp2, js3, cp3;
+        KinematicData lcp1, lcp2, lcp3;
+        KinematicData cv1, cv2;
+        ImageData     side_img;
 
-        if (g_use_left_image)  left_img  = g_left_image_buffer.front();
-        if (g_use_right_image) right_img = g_right_image_buffer.front();
-        if (g_record_psm1)     kin1      = g_kinematic_buffer.front();       // PSM1
-        if (g_record_psm2)     kin2      = g_kinematic_buffer_psm2.front();  // PSM2
-        if (g_record_ecm)      kin3      = g_kinematic_buffer_ecm.front();   // ECM
+        if (g_use_left_image)   left_img  = g_left_image_buffer.front();
+        if (g_use_right_image)  right_img = g_right_image_buffer.front();
+        if (g_use_side_image)   side_img  = g_side_image_buffer.front();
+
+        if (g_record_psm1)
+        {
+            js1 = g_js_buffer_psm1.front();
+            cp1 = g_cp_buffer_psm1.front();
+            lcp1 = g_lcp_buffer_psm1.front();
+        }
+        if (g_record_psm2)
+        {
+            js2 = g_js_buffer_psm2.front();
+            cp2 = g_cp_buffer_psm2.front();
+            lcp2 = g_lcp_buffer_psm2.front();
+        }
+        if (g_record_ecm)
+        {
+            js3 = g_js_buffer_ecm.front();
+            cp3 = g_cp_buffer_ecm.front();
+            lcp3 = g_lcp_buffer_ecm.front();
+        }
+
+        if (g_record_cv && g_record_psm1) cv1 = g_cv_buffer_psm1.front();
+        if (g_record_cv && g_record_psm2) cv2 = g_cv_buffer_psm2.front();
 
 
         ros::Time ref_stamp;
-        if (g_record_psm1)            ref_stamp = kin1.stamp;
-        else if (g_record_psm2)       ref_stamp = kin2.stamp;
-        else                           ref_stamp = kin3.stamp;
+        if (g_record_psm1)            ref_stamp = js1.stamp;
+        else if (g_record_psm2)       ref_stamp = js2.stamp;
+        else                           ref_stamp = js3.stamp;
 
         bool in_tol = true;
 
         if (g_use_left_image)  in_tol &= fabs((left_img.stamp  - ref_stamp).toSec())  < g_time_tol;
         if (g_use_right_image) in_tol &= fabs((right_img.stamp - ref_stamp).toSec())  < g_time_tol;
+        if (g_record_cv && g_record_psm1) in_tol &= fabs((cv1.stamp - ref_stamp).toSec()) < g_time_tol;
+        if (g_record_cv && g_record_psm2) in_tol &= fabs((cv2.stamp - ref_stamp).toSec()) < g_time_tol;
+        if (g_use_side_image)  in_tol &= fabs((side_img.stamp  - ref_stamp).toSec())  < g_time_tol;
+
 
         // Lines below are commented out, because we don't need to compare kinematic data to each other
         // in terms of time discrepency. each set of kinematic data is already compared to the images timestamp.
@@ -822,75 +840,63 @@ void syncThread() {
         // if (g_record_psm1 && g_record_psm2) in_tol &= fabs((kin2.stamp - ref_stamp).toSec()) < g_time_tol;
         // if (g_record_psm1 && g_record_ecm)  in_tol &= fabs((kin3.stamp - ref_stamp).toSec()) < g_time_tol;
         // if (!g_record_psm1 && g_record_psm2 && g_record_ecm) in_tol &= fabs((kin3.stamp - ref_stamp).toSec()) < g_time_tol;
+        // if (g_record_psm1) in_tol &= fabs((lcp1.stamp - ref_stamp).toSec()) < g_time_tol;
+        // if (g_record_psm2) in_tol &= fabs((lcp2.stamp - ref_stamp).toSec()) < g_time_tol;
+        // if (g_record_ecm)  in_tol &= fabs((lcp3.stamp - ref_stamp).toSec()) < g_time_tol;
+
 
         if (in_tol) 
         {
             SyncedPacket packet;
 
             packet.stamp     = ref_stamp; 
->>>>>>> db74a70 (re-organized file structure)
             packet.left_img  = left_img;
             packet.right_img = right_img;
-            packet.kin_psm1  = kin1;
-            packet.kin_psm2  = kin2;
-<<<<<<< HEAD
+            packet.side_img =  side_img;
 
+            packet.js_psm1 = js1;   packet.cp_psm1 = cp1;
+            packet.js_psm2 = js2;   packet.cp_psm2 = cp2;
+            packet.js_ecm  = js3;   packet.cp_ecm  = cp3;
 
-            g_synced_queue.push(packet);
+            packet.sp_js_psm1 = g_setpoint_js_psm1;
+            packet.sp_cp_psm1 = g_setpoint_cp_psm1;
 
+            packet.sp_js_psm2 = g_setpoint_js_psm2;
+            packet.sp_cp_psm2 = g_setpoint_cp_psm2;
 
-            // pop them all
-            g_left_image_buffer.pop();
-            g_right_image_buffer.pop();
-            g_kinematic_buffer.pop();       // PSM1
-            g_kinematic_buffer_psm2.pop();  // PSM2
+            packet.sp_js_ecm  = g_setpoint_js_ecm;
+            packet.sp_cp_ecm  = g_setpoint_cp_ecm;
 
-            g_cv.notify_one();
-        } 
-        
-        
-        else {
-            
-            ros::Time oldest_stamp = left_img.stamp;
-            if (right_img.stamp < oldest_stamp) oldest_stamp = right_img.stamp;
-            if (kin1.stamp < oldest_stamp)      oldest_stamp = kin1.stamp;
-            if (kin2.stamp < oldest_stamp)      oldest_stamp = kin2.stamp;
-
-            if (left_img.stamp == oldest_stamp) {
-                g_left_image_buffer.pop();
-            } 
-
-            else if (right_img.stamp == oldest_stamp) {
-                g_right_image_buffer.pop();
-            } 
-            else if (kin1.stamp == oldest_stamp) {
-                g_kinematic_buffer.pop();        // PSM1
-            } 
-            else {
-                g_kinematic_buffer_psm2.pop();   // PSM2
-            }
-
-            
-=======
-            packet.kin_ecm   = kin3;
-
-            packet.sp_psm1   = g_setpoint_psm1;
-            packet.sp_psm2   = g_setpoint_psm2;
-            packet.sp_ecm    = g_setpoint_ecm;
+            packet.lcp_psm1 = lcp1;      
+            packet.lcp_psm2 = lcp2;
+            packet.lcp_ecm  = lcp3;
 
             packet.jaw_meas_psm1 = g_jaw_meas_psm1;
             packet.jaw_set_psm1  = g_jaw_set_psm1;
             packet.jaw_meas_psm2 = g_jaw_meas_psm2;
             packet.jaw_set_psm2  = g_jaw_set_psm2;
-
+            if (g_record_cv) {
+                packet.cv_psm1 = cv1;
+                packet.cv_psm2 = cv2;
+  
+            }
+            
             g_synced_queue.push(packet);
 
             // pop the buffers we used
-            if (g_use_left_image)  g_left_image_buffer.pop();
-            if (g_use_right_image) g_right_image_buffer.pop();
-            if (g_record_psm1)     g_kinematic_buffer.pop();       // PSM1
-            if (g_record_psm2)     g_kinematic_buffer_psm2.pop();  // PSM2
-            if (g_record_ecm)      g_kinematic_buffer_ecm.pop();   // ECM
+            if (g_use_left_image)   g_left_image_buffer.pop();
+            if (g_use_right_image)  g_right_image_buffer.pop();
+            if (g_use_side_image)   g_side_image_buffer.pop();
+
+            if (g_record_psm1)
+            { g_js_buffer_psm1.pop(); g_cp_buffer_psm1.pop(); g_lcp_buffer_psm1.pop();}
+            if (g_record_psm2)
+            { g_js_buffer_psm2.pop(); g_cp_buffer_psm2.pop(); g_lcp_buffer_psm2.pop();}
+            if (g_record_ecm)
+            { g_js_buffer_ecm.pop();  g_cp_buffer_ecm.pop();  g_lcp_buffer_ecm.pop();}
+
+            if (g_record_cv && g_record_psm1) g_cv_buffer_psm1.pop();
+            if (g_record_cv && g_record_psm2) g_cv_buffer_psm2.pop();
 
             g_cv.notify_one();
         } 
@@ -900,19 +906,37 @@ void syncThread() {
             auto consider_stamp = [&](ros::Time t){ if (!init || t < oldest_stamp){ oldest_stamp = t; init = true; } };
 
             if (g_use_left_image)  consider_stamp(left_img.stamp);
+            if (g_use_side_image)  consider_stamp(side_img.stamp);
             if (g_use_right_image) consider_stamp(right_img.stamp);
-            if (g_record_psm1)     consider_stamp(kin1.stamp);
-            if (g_record_psm2)     consider_stamp(kin2.stamp);
-            if (g_record_ecm)      consider_stamp(kin3.stamp);
+
+            if (g_record_psm1){ consider_stamp(js1.stamp);  consider_stamp(cp1.stamp); consider_stamp(lcp1.stamp);}
+            if (g_record_psm2){ consider_stamp(js2.stamp);  consider_stamp(cp2.stamp); consider_stamp(lcp2.stamp);}
+            if (g_record_ecm ){ consider_stamp(js3.stamp);  consider_stamp(cp3.stamp); consider_stamp(lcp3.stamp);}
+
+            if (g_record_cv && g_record_psm1) consider_stamp(cv1.stamp);
+            if (g_record_cv && g_record_psm2) consider_stamp(cv2.stamp);
 
             if (g_use_left_image  && left_img.stamp  == oldest_stamp) g_left_image_buffer.pop();
             else if (g_use_right_image && right_img.stamp == oldest_stamp) g_right_image_buffer.pop();
-            else if (g_record_psm1 && kin1.stamp == oldest_stamp) g_kinematic_buffer.pop();
-            else if (g_record_psm2 && kin2.stamp == oldest_stamp) g_kinematic_buffer_psm2.pop();
-            else if (g_record_ecm) g_kinematic_buffer_ecm.pop();
->>>>>>> db74a70 (re-organized file structure)
-        }
+            else if (g_use_side_image  && side_img.stamp == oldest_stamp)  g_side_image_buffer.pop();
 
+            else if (g_record_psm1 && js1.stamp == oldest_stamp) g_js_buffer_psm1.pop();
+            else if (g_record_psm1 && cp1.stamp == oldest_stamp) g_cp_buffer_psm1.pop();
+
+            else if (g_record_psm2 && js2.stamp == oldest_stamp) g_js_buffer_psm2.pop();
+            else if (g_record_psm2 && cp2.stamp == oldest_stamp) g_cp_buffer_psm2.pop();
+
+            else if (g_record_ecm  && js3.stamp == oldest_stamp) g_js_buffer_ecm.pop();
+            else if (g_record_ecm  && cp3.stamp == oldest_stamp) g_cp_buffer_ecm.pop();
+
+            else if (g_record_cv && g_record_psm1 && cv1.stamp == oldest_stamp) g_cv_buffer_psm1.pop();
+            else if (g_record_cv && g_record_psm2 && cv2.stamp == oldest_stamp) g_cv_buffer_psm2.pop();
+
+            else if (g_record_psm1 && lcp1.stamp == oldest_stamp) g_lcp_buffer_psm1.pop();
+            else if (g_record_psm2 && lcp2.stamp == oldest_stamp) g_lcp_buffer_psm2.pop();
+            else if (g_record_ecm  && lcp3.stamp == oldest_stamp) g_lcp_buffer_ecm.pop();
+
+        }
 
     }
     std::cout << "------ syncThread exiting ------" << std::endl;
@@ -925,42 +949,30 @@ void syncThread() {
 void writerThread() {
     std::cout << "------ writerThread started ------" << std::endl;
 
-<<<<<<< HEAD
-=======
     // fast PNG params: compression level 1 (0-9, lower is faster)
     static const std::vector<int> PNG_FAST_PARAMS = {cv::IMWRITE_PNG_COMPRESSION, 1};
->>>>>>> db74a70 (re-organized file structure)
 
     while (ros::ok() && g_keep_running) {
         std::unique_lock<std::mutex> lock(g_data_mutex);
-        g_cv.wait(lock, [] {
-            return !g_synced_queue.empty() || !g_keep_running;
-        });
-
-
-        if (!g_keep_running && g_synced_queue.empty()) {
+        g_cv.wait(lock, []{ return !g_synced_queue.empty() || !g_keep_running; });
+    
+        if (!g_keep_running && g_synced_queue.empty())
             break;
-        }
-
-
+    
         SyncedPacket packet = g_synced_queue.front();
         g_synced_queue.pop();
         lock.unlock();
 
+        double psm1_cp_rate_hz = g_psm1_cp_rate.load(std::memory_order_relaxed);
 
-<<<<<<< HEAD
-        std::ostringstream folder_name;
-        folder_name << "recorded_data/"
-                    << packet.stamp.sec << "_"
-                    << packet.stamp.nsec;
-=======
         ros::WallTime wall_now = ros::WallTime::now();
         std::ostringstream folder_name;
         folder_name << "recorded_data/"
                     << wall_now.sec << "_"
                     << wall_now.nsec;
->>>>>>> db74a70 (re-organized file structure)
         std::string final_folder = folder_name.str();
+        
+        
 
 
         std::error_code ec;
@@ -976,24 +988,11 @@ void writerThread() {
 
 
         // Convert from BGR -> RGB as requested
-        cv::Mat left_rgb, right_rgb;
-<<<<<<< HEAD
-        cv::cvtColor(packet.left_img.image,  left_rgb,  cv::COLOR_BGR2RGB);
-        cv::cvtColor(packet.right_img.image, right_rgb, cv::COLOR_BGR2RGB);
-
-
-
-        std::string left_img_path  = final_folder + "/image_left.png";
-        std::string right_img_path = final_folder + "/image_right.png";
-        bool ok_left  = cv::imwrite(left_img_path,  left_rgb);
-        bool ok_right = cv::imwrite(right_img_path, right_rgb);
-
-
-        if (!ok_left || !ok_right) {
-=======
+        cv::Mat left_rgb, right_rgb, side_rgb;
 
         bool ok_left  = true;
         bool ok_right = true;
+        bool ok_side = true;
 
         if (g_use_left_image) {
             cv::cvtColor(packet.left_img.image,  left_rgb,  cv::COLOR_BGR2RGB);
@@ -1007,82 +1006,114 @@ void writerThread() {
             ok_right = cv::imwrite(right_img_path, right_rgb, PNG_FAST_PARAMS);
         }
 
-        if ((g_use_left_image && !ok_left) || (g_use_right_image && !ok_right)) {
->>>>>>> db74a70 (re-organized file structure)
+        if (g_use_side_image) {
+            cv::cvtColor(packet.side_img.image, side_rgb, cv::COLOR_BGR2RGB);
+            std::string side_path = final_folder + "/image_side.png";
+            ok_side = cv::imwrite(side_path, side_rgb, PNG_FAST_PARAMS);
+        }
+
+        if ((g_use_side_image && !ok_side) ||(g_use_left_image && !ok_left) || (g_use_right_image && !ok_right)) {
             std::cerr << "Failed to write images in " << final_folder << std::endl;
             continue;
         }
 
 
 
-<<<<<<< HEAD
-
-        // --- Write PSM1 kinematics ---
-        {
-
-=======
         // --- Write PSM1 kinematics ---
         if (g_record_psm1) {
->>>>>>> db74a70 (re-organized file structure)
             std::string kin_path_psm1 = final_folder + "/kinematics_PSM1.json";
             Json::Value root;
-            root["header"]["sec"]  = (Json::Value::Int64)packet.kin_psm1.stamp.sec;
-            root["header"]["nsec"] = (Json::Value::Int64)packet.kin_psm1.stamp.nsec;
+            root["measured_cp_hz"] = psm1_cp_rate_hz;   // NEW
+            root["header"]["sec"]  = (Json::Value::Int64)packet.cp_psm1.stamp.sec;
+            root["header"]["nsec"] = (Json::Value::Int64)packet.cp_psm1.stamp.nsec;
 
-            // arm
-            Json::Value arm_meas;
+                /* ---------------- measured_js ---------------- */
+            Json::Value meas_js;
             {
                 Json::Value pos(Json::arrayValue);
-                for (auto &p : packet.kin_psm1.position) { pos.append(p); }
-                arm_meas["position"] = pos;
+                for (double p : packet.js_psm1.position) pos.append(p);
+                meas_js["position"] = pos;
 
-                if (!packet.kin_psm1.orientation.empty()) {
-                    Json::Value ori(Json::arrayValue);
-                    for (auto &o : packet.kin_psm1.orientation) { ori.append(o); }
-                    arm_meas["orientation"] = ori;
-                }
-
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
-            if (!packet.kin_psm1.orientation.empty()) {
-                Json::Value ori(Json::arrayValue);
-                for (auto &o : packet.kin_psm1.orientation) { ori.append(o); }
-                root["orientation"] = ori;
-            }
-
->>>>>>> db74a70 (re-organized file structure)
-=======
                 Json::Value vel(Json::arrayValue);
-                for (auto &v : packet.kin_psm1.velocity) { vel.append(v); }
-                arm_meas["velocity"] = vel;
+                for (double v : packet.js_psm1.velocity) vel.append(v);
+                meas_js["velocity"] = vel;
 
                 Json::Value eff(Json::arrayValue);
-                for (auto &e : packet.kin_psm1.effort) { eff.append(e); }
-                arm_meas["effort"] = eff;
+                for (double e : packet.js_psm1.effort)   eff.append(e);
+                meas_js["effort"] = eff;
             }
 
-            Json::Value arm_set;
-            if (!packet.sp_psm1.position.empty()) {
+            /* ---------------- measured_cp ---------------- */
+            Json::Value meas_cp;
+            if (!packet.cp_psm1.position.empty())
+            {
                 Json::Value pos(Json::arrayValue);
-                for (auto &p : packet.sp_psm1.position) { pos.append(p); }
-                arm_set["position"] = pos;
->>>>>>> 81c542e (Update synchronized_recorder_node.cpp)
+                for (double p : packet.cp_psm1.position) pos.append(p);
+                meas_cp["position"] = pos;
+            }
+            if (!packet.cp_psm1.orientation.empty())
+            {
+                Json::Value ori(Json::arrayValue);
+                for (double o : packet.cp_psm1.orientation) ori.append(o);
+                meas_cp["orientation"] = ori;
+            }
+            if (g_record_cv && !packet.cv_psm1.velocity.empty())
+            {
+                Json::Value cart_vel(Json::arrayValue);
+                for (double v : packet.cv_psm1.velocity) cart_vel.append(v);
+                meas_cp["velocity"] = cart_vel;
+            }
 
-                if (!packet.sp_psm1.orientation.empty()) {
-                    Json::Value ori(Json::arrayValue);
-                    for (auto &o : packet.sp_psm1.orientation) { ori.append(o); }
-                    arm_set["orientation"] = ori;
-                }
+            Json::Value measured_block;
+            measured_block["js"] = meas_js;
+            measured_block["cp"] = meas_cp;
+
+
+            Json::Value set_js, set_cp;
+            /* --- set_js（joint space）--- */
+            if (!packet.sp_js_psm1.position.empty()) {
+                Json::Value pos(Json::arrayValue);
+                for (double p : packet.sp_js_psm1.position) pos.append(p);
+                set_js["position"] = pos;
 
                 Json::Value vel(Json::arrayValue);
-                for (auto &v : packet.sp_psm1.velocity) { vel.append(v); }
-                arm_set["velocity"] = vel;
+                for (double v : packet.sp_js_psm1.velocity) vel.append(v);
+                set_js["velocity"] = vel;
 
                 Json::Value eff(Json::arrayValue);
-                for (auto &e : packet.sp_psm1.effort) { eff.append(e); }
-                arm_set["effort"] = eff;
+                for (double e : packet.sp_js_psm1.effort)  eff.append(e);
+                set_js["effort"] = eff;
             }
+
+            /* --- set_cp（cartesian space）--- */
+            if (!packet.sp_cp_psm1.position.empty()) {
+                Json::Value pos(Json::arrayValue);
+                for (double p : packet.sp_cp_psm1.position) pos.append(p);
+                set_cp["position"] = pos;
+            }
+            if (!packet.sp_cp_psm1.orientation.empty()) {
+                Json::Value ori(Json::arrayValue);
+                for (double o : packet.sp_cp_psm1.orientation) ori.append(o);
+                set_cp["orientation"] = ori;
+            }
+
+            Json::Value set_block;
+            set_block["js"] = set_js;
+            set_block["cp"] = set_cp;
+
+            /* -------- local_cp -------- */
+            Json::Value local_cp;
+            if (!packet.lcp_psm1.position.empty()) {
+                Json::Value pos(Json::arrayValue);
+                for (double p : packet.lcp_psm1.position) pos.append(p);
+                local_cp["position"] = pos;
+            }
+            if (!packet.lcp_psm1.orientation.empty()) {
+                Json::Value ori(Json::arrayValue);
+                for (double o : packet.lcp_psm1.orientation) ori.append(o);
+                local_cp["orientation"] = ori;
+}
+
 
             Json::Value jaw_meas;
             if (!packet.jaw_meas_psm1.position.empty()) {
@@ -1099,8 +1130,9 @@ void writerThread() {
             }
 
             Json::Value arm_block;
-            arm_block["measured_data"] = arm_meas;
-            arm_block["setpoint_data"] = arm_set;
+            arm_block["measured_data"] = measured_block;
+            arm_block["setpoint_data"] = set_block;
+            arm_block["local_cp"]      = local_cp; 
 
             Json::Value jaw_block;
             jaw_block["measured_data"] = jaw_meas;
@@ -1121,70 +1153,97 @@ void writerThread() {
 
         
         // --- Write PSM2 kinematics ---
-<<<<<<< HEAD
-        {
-
-=======
         if (g_record_psm2) {
->>>>>>> db74a70 (re-organized file structure)
             std::string kin_path_psm2 = final_folder + "/kinematics_PSM2.json";
             Json::Value root;
-            root["header"]["sec"]  = (Json::Value::Int64)packet.kin_psm2.stamp.sec;
-            root["header"]["nsec"] = (Json::Value::Int64)packet.kin_psm2.stamp.nsec;
+            root["header"]["sec"]  = (Json::Value::Int64)packet.cp_psm2.stamp.sec;
+            root["header"]["nsec"] = (Json::Value::Int64)packet.cp_psm2.stamp.nsec;
 
-            Json::Value arm_meas;
+            Json::Value meas_js;
             {
                 Json::Value pos(Json::arrayValue);
-                for (auto &p : packet.kin_psm2.position) { pos.append(p); }
-                arm_meas["position"] = pos;
-
-                if (!packet.kin_psm2.orientation.empty()) {
-                    Json::Value ori(Json::arrayValue);
-                    for (auto &o : packet.kin_psm2.orientation) { ori.append(o); }
-                    arm_meas["orientation"] = ori;
-                }
-
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
-            if (!packet.kin_psm2.orientation.empty()) {
-                Json::Value ori(Json::arrayValue);
-                for (auto &o : packet.kin_psm2.orientation) { ori.append(o); }
-                root["orientation"] = ori;
-            }
-
->>>>>>> db74a70 (re-organized file structure)
-=======
+                for (double p : packet.js_psm2.position) pos.append(p);
+                meas_js["position"] = pos;
+        
                 Json::Value vel(Json::arrayValue);
-                for (auto &v : packet.kin_psm2.velocity) { vel.append(v); }
-                arm_meas["velocity"] = vel;
-
+                for (double v : packet.js_psm2.velocity) vel.append(v);
+                meas_js["velocity"] = vel;
+        
                 Json::Value eff(Json::arrayValue);
-                for (auto &e : packet.kin_psm2.effort) { eff.append(e); }
-                arm_meas["effort"] = eff;
+                for (double e : packet.js_psm2.effort)   eff.append(e);
+                meas_js["effort"] = eff;
             }
-
-            Json::Value arm_set;
-            if (!packet.sp_psm2.position.empty()) {
+        
+            /* ---------------- measured_cp ---------------- */
+            Json::Value meas_cp;
+            if (!packet.cp_psm2.position.empty())
+            {
                 Json::Value pos(Json::arrayValue);
-                for (auto &p : packet.sp_psm2.position) { pos.append(p); }
-                arm_set["position"] = pos;
->>>>>>> 81c542e (Update synchronized_recorder_node.cpp)
+                for (double p : packet.cp_psm2.position) pos.append(p);
+                meas_cp["position"] = pos;
+            }
+            if (!packet.cp_psm2.orientation.empty())
+            {
+                Json::Value ori(Json::arrayValue);
+                for (double o : packet.cp_psm2.orientation) ori.append(o);
+                meas_cp["orientation"] = ori;
+            }
+            if (g_record_cv && !packet.cv_psm2.velocity.empty())
+            {
+                Json::Value cart_vel(Json::arrayValue);
+                for (double v : packet.cv_psm2.velocity) cart_vel.append(v);
+                meas_cp["velocity"] = cart_vel;
+            }
 
-                if (!packet.sp_psm2.orientation.empty()) {
-                    Json::Value ori(Json::arrayValue);
-                    for (auto &o : packet.sp_psm2.orientation) { ori.append(o); }
-                    arm_set["orientation"] = ori;
-                }
+            Json::Value measured_block;
+            measured_block["js"] = meas_js;
+            measured_block["cp"] = meas_cp;
+
+            Json::Value set_js, set_cp;
+            /* --- set_js（joint space）--- */
+            if (!packet.sp_js_psm2.position.empty()) {
+                Json::Value pos(Json::arrayValue);
+                for (double p : packet.sp_js_psm2.position) pos.append(p);
+                set_js["position"] = pos;
 
                 Json::Value vel(Json::arrayValue);
-                for (auto &v : packet.sp_psm2.velocity) { vel.append(v); }
-                arm_set["velocity"] = vel;
+                for (double v : packet.sp_js_psm2.velocity) vel.append(v);
+                set_js["velocity"] = vel;
 
                 Json::Value eff(Json::arrayValue);
-                for (auto &e : packet.sp_psm2.effort) { eff.append(e); }
-                arm_set["effort"] = eff;
+                for (double e : packet.sp_js_psm2.effort)  eff.append(e);
+                set_js["effort"] = eff;
             }
+
+            /* --- set_cp（cartesian space）--- */
+            if (!packet.sp_cp_psm2.position.empty()) {
+                Json::Value pos(Json::arrayValue);
+                for (double p : packet.sp_cp_psm2.position) pos.append(p);
+                set_cp["position"] = pos;
+            }
+            if (!packet.sp_cp_psm2.orientation.empty()) {
+                Json::Value ori(Json::arrayValue);
+                for (double o : packet.sp_cp_psm2.orientation) ori.append(o);
+                set_cp["orientation"] = ori;
+            }
+
+            Json::Value set_block;
+            set_block["js"] = set_js;
+            set_block["cp"] = set_cp;
+
+            /* -------- local_cp -------- */
+            Json::Value local_cp;
+            if (!packet.lcp_psm2.position.empty()) {
+                Json::Value pos(Json::arrayValue);
+                for (double p : packet.lcp_psm2.position) pos.append(p);
+                local_cp["position"] = pos;
+            }
+            if (!packet.lcp_psm2.orientation.empty()) {
+                Json::Value ori(Json::arrayValue);
+                for (double o : packet.lcp_psm2.orientation) ori.append(o);
+                local_cp["orientation"] = ori;
+            }
+
 
             Json::Value jaw_meas;
             if (!packet.jaw_meas_psm2.position.empty()) {
@@ -1201,8 +1260,9 @@ void writerThread() {
             }
 
             Json::Value arm_block;
-            arm_block["measured_data"] = arm_meas;
-            arm_block["setpoint_data"] = arm_set;
+            arm_block["measured_data"] = measured_block;
+            arm_block["setpoint_data"] = set_block;
+            arm_block["local_cp"]      = local_cp; 
 
             Json::Value jaw_block;
             jaw_block["measured_data"] = jaw_meas;
@@ -1221,69 +1281,112 @@ void writerThread() {
             file.close();
         }
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-
-        std::cout << "[writerThread] Wrote images + PSM1 & PSM2 JSON to " 
-=======
-        // --- Write ECM kinematics ---
-=======
-        // --- Write ECM kinematics (unchanged) ---
->>>>>>> 81c542e (Update synchronized_recorder_node.cpp)
-=======
         
         // --- Write ECM kinematics ---
->>>>>>> 9f44840 (Update synchronized_recorder_node.cpp)
         if (g_record_ecm) {
             std::string kin_path_ecm = final_folder + "/kinematics_ECM.json";
             Json::Value root;
-            root["header"]["sec"]  = (Json::Value::Int64)packet.kin_ecm.stamp.sec;
-            root["header"]["nsec"] = (Json::Value::Int64)packet.kin_ecm.stamp.nsec;
+            root["header"]["sec"]  = (Json::Value::Int64)packet.cp_ecm.stamp.sec;
+            root["header"]["nsec"] = (Json::Value::Int64)packet.cp_ecm.stamp.nsec;
 
-            Json::Value measured;
+                    /* ---------- measured_js ---------- */
+            Json::Value meas_js;
             {
                 Json::Value pos(Json::arrayValue);
-                for (auto &p : packet.kin_ecm.position) { pos.append(p); }
-                measured["position"] = pos;
-
-                if (!packet.kin_ecm.orientation.empty()) {
-                    Json::Value ori(Json::arrayValue);
-                    for (auto &o : packet.kin_ecm.orientation) { ori.append(o); }
-                    measured["orientation"] = ori;
-                }
+                for (double p : packet.js_ecm.position)  pos.append(p);
+                meas_js["position"] = pos;
 
                 Json::Value vel(Json::arrayValue);
-                for (auto &v : packet.kin_ecm.velocity) { vel.append(v); }
-                measured["velocity"] = vel;
+                for (double v : packet.js_ecm.velocity)  vel.append(v);
+                meas_js["velocity"] = vel;
 
                 Json::Value eff(Json::arrayValue);
-                for (auto &e : packet.kin_ecm.effort) { eff.append(e); }
-                measured["effort"] = eff;
+                for (double e : packet.js_ecm.effort)    eff.append(e);
+                meas_js["effort"] = eff;
             }
-            root["measured_data"] = measured;
 
-            Json::Value setp;
-            if (!packet.sp_ecm.position.empty()) {
+            /* ---------- measured_cp ---------- */
+            Json::Value meas_cp;
+            if (!packet.cp_ecm.position.empty())
+            {
                 Json::Value pos(Json::arrayValue);
-                for (auto &p : packet.sp_ecm.position) { pos.append(p); }
-                setp["position"] = pos;
-
-                if (!packet.sp_ecm.orientation.empty()) {
-                    Json::Value ori(Json::arrayValue);
-                    for (auto &o : packet.sp_ecm.orientation) { ori.append(o); }
-                    setp["orientation"] = ori;
-                }
-
-                Json::Value vel(Json::arrayValue);
-                for (auto &v : packet.sp_ecm.velocity) { vel.append(v); }
-                setp["velocity"] = vel;
-
-                Json::Value eff(Json::arrayValue);
-                for (auto &e : packet.sp_ecm.effort) { eff.append(e); }
-                setp["effort"] = eff;
+                for (double p : packet.cp_ecm.position)  pos.append(p);
+                meas_cp["position"] = pos;
             }
-            root["setpoint_data"] = setp;
+            if (!packet.cp_ecm.orientation.empty())
+            {
+                Json::Value ori(Json::arrayValue);
+                for (double o : packet.cp_ecm.orientation) ori.append(o);
+                meas_cp["orientation"] = ori;
+            }
+
+            /* ---------- measured_data block ---------- */
+            Json::Value measured_block;
+            measured_block["js"] = meas_js;
+            measured_block["cp"] = meas_cp;
+
+            /* ---------- set-point (JS / CP) ---------- */
+            Json::Value set_js, set_cp;
+
+            /* JS (set_js) */
+            if (!packet.sp_js_ecm.position.empty())
+            {
+                Json::Value pos(Json::arrayValue);
+                for (double p : packet.sp_js_ecm.position) pos.append(p);
+                set_js["position"] = pos;
+            }
+            if (!packet.sp_js_ecm.velocity.empty())
+            {
+                Json::Value vel(Json::arrayValue);
+                for (double v : packet.sp_js_ecm.velocity) vel.append(v);
+                set_js["velocity"] = vel;
+            }
+            if (!packet.sp_js_ecm.effort.empty())
+            {
+                Json::Value eff(Json::arrayValue);
+                for (double e : packet.sp_js_ecm.effort) eff.append(e);
+                set_js["effort"] = eff;
+            }
+
+            /* CP (set_cp) */
+            if (!packet.sp_cp_ecm.position.empty())
+            {
+                Json::Value pos(Json::arrayValue);
+                for (double p : packet.sp_cp_ecm.position) pos.append(p);
+                set_cp["position"] = pos;
+            }
+            if (!packet.sp_cp_ecm.orientation.empty())
+            {
+                Json::Value ori(Json::arrayValue);
+                for (double o : packet.sp_cp_ecm.orientation) ori.append(o);
+                set_cp["orientation"] = ori;
+            }
+
+            Json::Value set_block;
+            set_block["js"] = set_js;
+            set_block["cp"] = set_cp;
+
+            /* -------- local_cp -------- */
+            Json::Value local_cp;
+            if (!packet.lcp_ecm.position.empty()) {
+                Json::Value pos(Json::arrayValue);
+                for (double p : packet.lcp_ecm.position) pos.append(p);
+                local_cp["position"] = pos;
+            }
+            if (!packet.lcp_ecm.orientation.empty()) {
+                Json::Value ori(Json::arrayValue);
+                for (double o : packet.lcp_ecm.orientation) ori.append(o);
+                local_cp["orientation"] = ori;
+            }
+
+
+            /* -------- arm_block -------- */
+            Json::Value arm_block;
+            arm_block["measured_data"] = measured_block;
+            arm_block["setpoint_data"] = set_block; 
+            arm_block["local_cp"]      = local_cp; 
+
+            root["arm"] = arm_block; 
 
             std::ofstream file(kin_path_ecm);
             if (!file) {
@@ -1297,7 +1400,6 @@ void writerThread() {
 
 
         std::cout << "[writerThread] Wrote data to " 
->>>>>>> db74a70 (re-organized file structure)
                   << final_folder << std::endl;
     }
 
@@ -1308,16 +1410,7 @@ void writerThread() {
 
 
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-
-=======
->>>>>>> db74a70 (re-organized file structure)
-// ---------------------------- Post-processing functions below ----------------------------
-
-=======
 // ---------------------------- post-processing functions below ----------------------------
->>>>>>> 9f44840 (Update synchronized_recorder_node.cpp)
 
 // remove incomplete folders - these folders are not useful because either images or kinematic data sets are missing
 void cleanupFolders() {
@@ -1334,219 +1427,38 @@ void cleanupFolders() {
 
             auto img_left_path  = entry.path() / "image_left.png";
             auto img_right_path = entry.path() / "image_right.png";
+            auto img_side_path = entry.path() / "image_side.png";
             auto json_psm1_path = entry.path() / "kinematics_PSM1.json";
             auto json_psm2_path = entry.path() / "kinematics_PSM2.json";
-<<<<<<< HEAD
-=======
             auto json_ecm_path  = entry.path() / "kinematics_ECM.json";
->>>>>>> db74a70 (re-organized file structure)
 
-
+            
             bool left_exists   = std::filesystem::exists(img_left_path);
             bool right_exists  = std::filesystem::exists(img_right_path);
+            bool side_exists   = std::filesystem::exists(img_side_path);
             bool psm1_exists   = std::filesystem::exists(json_psm1_path);
             bool psm2_exists   = std::filesystem::exists(json_psm2_path);
-<<<<<<< HEAD
-
-
-
-
-            // If missing any of the 4, remove the folder
-            if (!left_exists || !right_exists || !psm1_exists || !psm2_exists) {
-                std::cout << "Removing incomplete folder: " 
-                          << entry.path().string() << std::endl;
-=======
-        g_kinematic_buffer.push(kin_data);
-    }
-}
-
-// A helper function to be called by writers after finishing their job
-void writerDone() {
-    std::lock_guard<std::mutex> lock(g_data_mutex);
-    g_writers_done++;
-    if (g_writers_done == 2) {
-        // Both writers have finished successfully
-        g_data_ready = false;
-        g_writers_done = 0;
-    }
-}
-
-// Thread #2: Synchronization
-void syncThread() {
-    std::cout << " ------ entered sync thread ------" << std::endl;
-    while (ros::ok() && g_keep_running) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-
-        std::lock_guard<std::mutex> lock(g_data_mutex);
-        if (g_data_ready) {
-            // Already have data ready, skip
-            continue;
-        }
-
-        if (g_image_buffer.empty() || g_kinematic_buffer.empty()) {
-            continue;
-        }
-
-        ImageData img_data = g_image_buffer.front();
-        KinematicData kin_data = g_kinematic_buffer.front();
-        double time_diff = fabs((img_data.stamp - kin_data.stamp).toSec());
-        if (time_diff < TIME_TOL) {
-            g_synced_image = img_data;
-            g_synced_kinematic = kin_data;
-
-            g_image_buffer.pop();
-            g_kinematic_buffer.pop();
-
-            // Create a folder named after the timestamp of this pair
-            std::ostringstream folder_name;
-            folder_name << "recorded_data/" << g_synced_image.stamp.sec << "_" << g_synced_image.stamp.nsec;
-            g_synced_folder = folder_name.str();
-
-            std::error_code ec;
-            std::filesystem::create_directories(g_synced_folder, ec);
-            if (ec) {
-                std::cerr << "Failed to create directory " << g_synced_folder << ": " << ec.message() << std::endl;
-                g_data_ready = false;
-                continue;
-            }
-
-            g_data_ready = true;
-            g_cv.notify_all();
-        } else {
-            // Discard the older one
-            if (img_data.stamp < kin_data.stamp) {
-                g_image_buffer.pop();
-            } else {
-                g_kinematic_buffer.pop();
-            }
-        }
-    }
-}
-
-// Thread #3: Image Writer
-void imageWriterThread() {
-    std::cout << " ------ entered imageWriter thread ------" << std::endl;
-    while (ros::ok() && g_keep_running) {
-        std::unique_lock<std::mutex> lock(g_data_mutex);
-        g_cv.wait(lock, [] { return g_data_ready || !g_keep_running; });
-        if (!g_keep_running) break;
-
-        ImageData local_img = g_synced_image; // Make a copy
-        std::string folder = g_synced_folder;
-        lock.unlock();
-
-        std::string img_filename = folder + "/image.png";
-        bool success = cv::imwrite(img_filename, local_img.image);
-        if (success) {
-            std::cout << " ****** wrote a sync image to " << img_filename << " ****** " << std::endl;
-            writerDone(); 
-        } else {
-            std::cerr << "Failed to write image: " << img_filename << std::endl;
-            {
-                std::lock_guard<std::mutex> fail_lock(g_data_mutex);
-                g_data_ready = false;
-                g_writers_done = 0;
-            }
-        }
-    }
-}
-
-// Thread #4: Kinematic Writer
-void kinematicWriterThread() {
-    std::cout << " ------ entered kinematicWriter thread ------" << std::endl;
-    while (ros::ok() && g_keep_running) {
-        std::unique_lock<std::mutex> lock(g_data_mutex);
-        g_cv.wait(lock, [] { return g_data_ready || !g_keep_running; });
-        if (!g_keep_running) break;
-
-        KinematicData local_kin = g_synced_kinematic; // Make a copy
-        std::string folder = g_synced_folder;
-        lock.unlock();
-
-        std::string kin_filename = folder + "/kinematics.json";
-
-        Json::Value root;
-        root["header"]["sec"] = (Json::Value::Int64)local_kin.stamp.sec;
-        root["header"]["nsec"] = (Json::Value::Int64)local_kin.stamp.nsec;
-
-        Json::Value pos(Json::arrayValue);
-        for (auto &p : local_kin.position) {
-            pos.append(p);
-        }
-        root["position"] = pos;
-
-        Json::Value vel(Json::arrayValue);
-        for (auto &v : local_kin.velocity) {
-            vel.append(v);
-        }
-        root["velocity"] = vel;
-
-        Json::Value eff(Json::arrayValue);
-        for (auto &e : local_kin.effort) {
-            eff.append(e);
-        }
-        root["effort"] = eff;
-
-        std::ofstream file(kin_filename);
-        if (file) {
-            file << root.toStyledString();
-            file.close();
-            std::cout << " ****** wrote a sync json to " << kin_filename << " ****** " << std::endl;
-            writerDone();
-        } else {
-            std::cerr << "Failed to write json: " << kin_filename << std::endl;
-            {
-                std::lock_guard<std::mutex> fail_lock(g_data_mutex);
-                g_data_ready = false;
-                g_writers_done = 0;
-            }
-        }
-    }
-}
-
-void cleanupFolders() {
-    std::cout << " ------ cleanup step: checking for incomplete folders ------" << std::endl;
-    std::filesystem::path base_dir("recorded_data");
-    if (!std::filesystem::exists(base_dir)) {
-        return; // No recorded_data directory
-    }
-
-    for (auto &entry : std::filesystem::directory_iterator(base_dir)) {
-        if (entry.is_directory()) {
-            auto img_path = entry.path() / "image.png";
-            auto json_path = entry.path() / "kinematics.json";
-            bool img_exists = std::filesystem::exists(img_path);
-            bool json_exists = std::filesystem::exists(json_path);
-
-            // If folder has only JSON and no image, delete the folder
-            if (!img_exists && json_exists) {
-                std::cout << "Removing incomplete folder: " << entry.path().string() << std::endl;
->>>>>>> 4754361 (Upload of the script )
-=======
             bool ecm_exists    = std::filesystem::exists(json_ecm_path);
 
             bool remove = false;
             if (g_use_left_image  && !left_exists)  remove = true;
             if (g_use_right_image && !right_exists) remove = true;
+            if (g_use_side_image && !side_exists)   remove = true;
             if (g_record_psm1     && !psm1_exists)  remove = true;
             if (g_record_psm2     && !psm2_exists)  remove = true;
             if (g_record_ecm      && !ecm_exists)   remove = true;
+
 
             // If missing any required file, remove the folder
             if (remove) {
                 std::cout << "Removing incomplete folder: " 
                           << entry.path().string() << std::endl;
->>>>>>> db74a70 (re-organized file structure)
                 std::filesystem::remove_all(entry.path());
             }
         }
     }
 }
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> db74a70 (re-organized file structure)
 
 // testing tool to see the frequency of the recording (counting complete recording sets only)
 void countFoldersPerSecond() {
@@ -1584,35 +1496,62 @@ void countFoldersPerSecond() {
 
 void reformatDataStorage() {
     std::string base_folder = "data_save_folder";
-    std::filesystem::create_directories(base_folder + "/image");
-    std::filesystem::create_directories(base_folder + "/kinematic");
+    std::filesystem::create_directories(base_folder + "/image/left");
+    std::filesystem::create_directories(base_folder + "/image/right");
+    std::filesystem::create_directories(base_folder + "/image/side");
+    std::filesystem::create_directories(base_folder + "/kinematic/PSM1");
+    std::filesystem::create_directories(base_folder + "/kinematic/PSM2");
+    std::filesystem::create_directories(base_folder + "/kinematic/ECM");
     std::filesystem::create_directories(base_folder + "/time_syn");
 
-    int index = 0;
-    for (const auto &entry : std::filesystem::directory_iterator("recorded_data")) {
-        if (entry.is_directory()) {
-            std::string img_left_src   = entry.path().string() + "/image_left.png";
-            std::string img_right_src  = entry.path().string() + "/image_right.png";
-            std::string kin_src_psm1   = entry.path().string() + "/kinematics_PSM1.json";
-            std::string kin_src_psm2   = entry.path().string() + "/kinematics_PSM2.json";
-<<<<<<< HEAD
-=======
-            std::string kin_src_ecm    = entry.path().string() + "/kinematics_ECM.json";
->>>>>>> db74a70 (re-organized file structure)
-            std::string time_syn_src   = entry.path().string(); // the entire folder as context
+    std::vector<std::filesystem::path> folders;        
 
-            std::string img_left_dst   = base_folder + "/image/" + std::to_string(index) + "_left.png";
-            std::string img_right_dst  = base_folder + "/image/" + std::to_string(index) + "_right.png";
-<<<<<<< HEAD
-            // Now name the kinematics files "index_PSM1.json" and "index_PSM2.json"
-            std::string kin_dst_psm1   = base_folder + "/kinematic/" + std::to_string(index) + "_PSM1.json";
-            std::string kin_dst_psm2   = base_folder + "/kinematic/" + std::to_string(index) + "_PSM2.json";
-=======
+    for (const auto &entry : std::filesystem::directory_iterator("recorded_data"))
+    {
+        if (entry.is_directory())
+            folders.emplace_back(entry.path());
+    }
+
+    auto timeLess = [](const std::filesystem::path &a,
+                    const std::filesystem::path &b) -> bool
+    {
+        auto parse = [](const std::string &name) -> std::pair<long long,long long>
+        {
+            const size_t us = name.find('_');
+            long long sec  = std::stoll(name.substr(0, us));
+            long long nsec = (us == std::string::npos) ? 0
+                                                    : std::stoll(name.substr(us + 1));
+            return {sec, nsec};
+        };
+
+        const auto ta = parse(a.filename().string());
+        const auto tb = parse(b.filename().string());
+
+        return  (ta.first  < tb.first)  ||
+            ((ta.first == tb.first) && ta.second < tb.second);
+    };
+    std::sort(folders.begin(), folders.end(), timeLess);
+
+
+    int index = 0;
+    for (const auto &dir : folders)  
+         {
+            std::string img_left_src   = dir.string() + "/image_left.png";
+            std::string img_right_src  = dir.string() + "/image_right.png";
+            std::string img_side_src   = dir.string() + "/image_side.png";
+            std::string kin_src_psm1   = dir.string() + "/kinematics_PSM1.json";
+            std::string kin_src_psm2   = dir.string() + "/kinematics_PSM2.json";
+            std::string kin_src_ecm    = dir.string() + "/kinematics_ECM.json";
+            std::string time_syn_src   = dir.string(); // the entire folder as context
+
+            std::string img_left_dst   = base_folder + "/image/left/" + std::to_string(index) + ".png";
+            std::string img_right_dst  = base_folder + "/image/right/" + std::to_string(index) + ".png";
+            std::string img_side_dst   = base_folder + "/image/side/" + std::to_string(index) + ".png";
+
             // Now name the kinematics files "index_PSM1.json" and "index_PSM2.json" and "index_ECM.json"
-            std::string kin_dst_psm1   = base_folder + "/kinematic/" + std::to_string(index) + "_PSM1.json";
-            std::string kin_dst_psm2   = base_folder + "/kinematic/" + std::to_string(index) + "_PSM2.json";
-            std::string kin_dst_ecm    = base_folder + "/kinematic/" + std::to_string(index) + "_ECM.json";
->>>>>>> db74a70 (re-organized file structure)
+            std::string kin_dst_psm1   = base_folder + "/kinematic/PSM1/" + std::to_string(index) + ".json";
+            std::string kin_dst_psm2   = base_folder + "/kinematic/PSM2/" + std::to_string(index) + ".json";
+            std::string kin_dst_ecm    = base_folder + "/kinematic/ECM/" + std::to_string(index) + ".json";
 
             std::string time_syn_dst   = base_folder + "/time_syn/" + std::to_string(index) + ".json";
 
@@ -1624,6 +1563,10 @@ void reformatDataStorage() {
                 std::filesystem::copy(img_right_src, img_right_dst,
                                       std::filesystem::copy_options::overwrite_existing);
             }
+            if (std::filesystem::exists(img_side_src)) {
+                std::filesystem::copy(img_side_src, img_side_dst,
+                                      std::filesystem::copy_options::overwrite_existing);
+            }            
             if (std::filesystem::exists(kin_src_psm1)) {
                 std::filesystem::copy(kin_src_psm1, kin_dst_psm1,
                                       std::filesystem::copy_options::overwrite_existing);
@@ -1632,17 +1575,14 @@ void reformatDataStorage() {
                 std::filesystem::copy(kin_src_psm2, kin_dst_psm2,
                                       std::filesystem::copy_options::overwrite_existing);
             }
-<<<<<<< HEAD
-=======
             if (std::filesystem::exists(kin_src_ecm)) {
                 std::filesystem::copy(kin_src_ecm, kin_dst_ecm,
                                       std::filesystem::copy_options::overwrite_existing);
             }
->>>>>>> db74a70 (re-organized file structure)
 
             // Save time info
             Json::Value time_data;
-            time_data["timestamp"] = entry.path().filename().string();
+            time_data["timestamp"] = dir.filename().string();
             std::ofstream file(time_syn_dst);
             if (file) {
                 file << time_data.toStyledString();
@@ -1651,48 +1591,30 @@ void reformatDataStorage() {
 
             index++;
         }
-    }
+}
 
     // De-comment the line below to remove the recorded_data folder!
     // The line is commented below for testing purposes
     // std::filesystem::remove_all("recorded_data");
-}
+
 
 
 
 
 int main(int argc, char** argv) {
     std::cout << "------ program starting ------" << std::endl;
-<<<<<<< HEAD
-=======
-int main(int argc, char** argv) {
-    std::cout << " ------ program starting ------" << std::endl;
->>>>>>> 4754361 (Upload of the script )
-=======
 
     // parse custom arguments BEFORE ros::init so ROS can consume its own
     parseArguments(argc, argv);
 
->>>>>>> db74a70 (re-organized file structure)
     ros::init(argc, argv, "synchronized_recorder_node");
     ros::NodeHandle nh;
 
     image_transport::ImageTransport it(nh);
-<<<<<<< HEAD
-<<<<<<< HEAD
-
-    image_transport::Subscriber left_sub  = it.subscribe("/test/left/image_raw",  1, imageCallbackLeft);
-    image_transport::Subscriber right_sub = it.subscribe("/test/right/image_raw", 1, imageCallbackRight);
-
-
-    ros::Subscriber joint_sub_psm1 = nh.subscribe("/PSM1/measured_js", 1, jointStateCallback);
-
-    // adding in a subscriber for PSM2
-    ros::Subscriber joint_sub_psm2 = nh.subscribe("/PSM2/measured_js", 1, jointStateCallbackPSM2);
-=======
 
     image_transport::Subscriber left_sub;
     image_transport::Subscriber right_sub;
+    image_transport::Subscriber side_sub;
 
     if (g_use_left_image) {
         std::string left_topic = "/" + g_camera_topic_base + "/left/image_raw";
@@ -1702,128 +1624,118 @@ int main(int argc, char** argv) {
         std::string right_topic = "/" + g_camera_topic_base + "/right/image_raw";
         right_sub = it.subscribe(right_topic, 1, imageCallbackRight);
     }
+    if (g_use_side_image) {
+    side_sub = it.subscribe("/camera/image_raw", 1, imageCallbackSide);
+    }
 
+    ros::Subscriber cp_sub_psm1;
+    ros::Subscriber js_sub_psm1;
+    ros::Subscriber cp_sub_psm2;
+    ros::Subscriber js_sub_psm2;
+    ros::Subscriber cp_sub_ecm;
+    ros::Subscriber js_sub_ecm;
 
-    ros::Subscriber joint_sub_psm1;
-    ros::Subscriber joint_sub_psm2;
-    ros::Subscriber joint_sub_ecm;
-
-    ros::Subscriber set_sub_psm1;
-    ros::Subscriber set_sub_psm2;
-    ros::Subscriber set_sub_ecm;
+    ros::Subscriber cp_set_sub_psm1;
+    ros::Subscriber cp_set_sub_psm2;
+    ros::Subscriber cp_set_sub_ecm;
+    ros::Subscriber js_set_sub_psm1;
+    ros::Subscriber js_set_sub_psm2;
+    ros::Subscriber js_set_sub_ecm;
 
     ros::Subscriber jaw_meas_sub_psm1;
     ros::Subscriber jaw_meas_sub_psm2;
     ros::Subscriber jaw_set_sub_psm1;
     ros::Subscriber jaw_set_sub_psm2;
+    ros::Subscriber cv_sub_psm1, cv_sub_psm2;
+
+    ros::Subscriber lcp_sub_psm1;
+    ros::Subscriber lcp_sub_psm2;
+    ros::Subscriber lcp_sub_ecm;
 
     // adding in a subscriber for PSM1
     if (g_record_psm1) {
-        if (g_use_js) {
-            std::string topic = "/PSM1/measured_js";
-            joint_sub_psm1 = nh.subscribe(topic, 1, jointStateCallback);
 
-            std::string set_topic = "/PSM1/setpoint_js";
-            set_sub_psm1 = nh.subscribe(set_topic, 1, setpointJSCallbackPSM1);
+            std::string js_topic_psm1 = "/PSM1/measured_js";
+            js_sub_psm1 = nh.subscribe(js_topic_psm1, 1, jointStateCallback);
 
-            std::string jaw_topic = "/PSM1/jaw/measured_js";
-            jaw_meas_sub_psm1 = nh.subscribe(jaw_topic, 1, jawMeasuredJSCallbackPSM1);
+            std::string cp_topic_psm1 = "/PSM1/measured_cp";
+            cp_sub_psm1 = nh.subscribe(cp_topic_psm1, 2000, poseCallbackPSM1);
 
-            std::string jaw_set_topic = "/PSM1/jaw/setpoint_js";
-            jaw_set_sub_psm1 = nh.subscribe(jaw_set_topic, 1, jawSetpointJSCallbackPSM1);
-        } else {
-            std::string topic = "/PSM1/measured_cp";
-            joint_sub_psm1 = nh.subscribe(topic, 1, poseCallbackPSM1);
+            std::string cp_set_topic_psm1 = "/PSM1/setpoint_cp";
+            cp_set_sub_psm1 = nh.subscribe(cp_set_topic_psm1, 1, setpointCPCallbackPSM1);
 
-            std::string set_topic = "/PSM1/setpoint_cp";
-            set_sub_psm1 = nh.subscribe(set_topic, 1, setpointCPCallbackPSM1);
+            std::string js_set_topic_psm1 = "/PSM1/setpoint_js";
+            js_set_sub_psm1 = nh.subscribe(js_set_topic_psm1, 1, setpointJSCallbackPSM1);
 
             std::string jaw_topic = "/PSM1/jaw/measured_js";
             jaw_meas_sub_psm1 = nh.subscribe(jaw_topic, 1, jawMeasuredJSCallbackPSM1);
-
             std::string jaw_set_topic = "/PSM1/jaw/setpoint_js";
             jaw_set_sub_psm1 = nh.subscribe(jaw_set_topic, 1, jawSetpointJSCallbackPSM1);
-        }
+
+            lcp_sub_psm1 = nh.subscribe("/PSM1/local/measured_cp", 1, localCPCallbackPSM1);
     }
 
     // adding in a subscriber for PSM2
     if (g_record_psm2) {
-        if (g_use_js) {
-            std::string topic = "/PSM2/measured_js";
-            joint_sub_psm2 = nh.subscribe(topic, 1, jointStateCallbackPSM2);
+ 
+            std::string js_topic_psm2 = "/PSM2/measured_js";
+            js_sub_psm2 = nh.subscribe(js_topic_psm2, 1, jointStateCallbackPSM2);
 
-            std::string set_topic = "/PSM2/setpoint_js";
-            set_sub_psm2 = nh.subscribe(set_topic, 1, setpointJSCallbackPSM2);
+            std::string cp_topic_psm2  = "/PSM2/measured_cp";
+            cp_sub_psm2 = nh.subscribe(cp_topic_psm2, 1, poseCallbackPSM2);
 
-            std::string jaw_topic = "/PSM2/jaw/measured_js";
-            jaw_meas_sub_psm2 = nh.subscribe(jaw_topic, 1, jawMeasuredJSCallbackPSM2);
+            std::string js_set_topic_psm2 = "/PSM2/setpoint_js";
+            js_set_sub_psm2 = nh.subscribe(js_set_topic_psm2, 1, setpointJSCallbackPSM2);
 
-            std::string jaw_set_topic = "/PSM2/jaw/setpoint_js";
-            jaw_set_sub_psm2 = nh.subscribe(jaw_set_topic, 1, jawSetpointJSCallbackPSM2);
-        } else {
-            std::string topic = "/PSM2/measured_cp";
-            joint_sub_psm2 = nh.subscribe(topic, 1, poseCallbackPSM2);
-
-            std::string set_topic = "/PSM2/setpoint_cp";
-            set_sub_psm2 = nh.subscribe(set_topic, 1, setpointCPCallbackPSM2);
+            std::string cp_set_topic_psm2 = "/PSM2/setpoint_cp";
+            cp_set_sub_psm2 = nh.subscribe(cp_set_topic_psm2, 1, setpointCPCallbackPSM2);
 
             std::string jaw_topic = "/PSM2/jaw/measured_js";
             jaw_meas_sub_psm2 = nh.subscribe(jaw_topic, 1, jawMeasuredJSCallbackPSM2);
 
             std::string jaw_set_topic = "/PSM2/jaw/setpoint_js";
             jaw_set_sub_psm2 = nh.subscribe(jaw_set_topic, 1, jawSetpointJSCallbackPSM2);
-        }
+
+            lcp_sub_psm2 = nh.subscribe("/PSM2/local/measured_cp", 1, localCPCallbackPSM2);
+
     }
 
     // adding in a subscriber for ECM
     if (g_record_ecm) {
-        if (g_use_js) {
-            std::string topic = "/ECM/measured_js";
-            joint_sub_ecm = nh.subscribe(topic, 1, jointStateCallbackECM);
 
-            std::string set_topic = "/ECM/setpoint_js";
-            set_sub_ecm = nh.subscribe(set_topic, 1, setpointJSCallbackECM);
-        } else {
-            std::string topic = "/ECM/measured_cp";
-            joint_sub_ecm = nh.subscribe(topic, 1, poseCallbackECM);
+            std::string js_topic_ecm = "/ECM/measured_js";
+            js_sub_ecm = nh.subscribe(js_topic_ecm, 1, jointStateCallbackECM);
 
-            std::string set_topic = "/ECM/setpoint_cp";
-            set_sub_ecm = nh.subscribe(set_topic, 1, setpointCPCallbackECM);
-        }
+            std::string js_set_topic_ecm = "/ECM/setpoint_js";
+            js_set_sub_ecm = nh.subscribe(js_set_topic_ecm, 1, setpointJSCallbackECM);
+
+            std::string cp_topic_ecm = "/ECM/measured_cp";
+            cp_sub_ecm = nh.subscribe(cp_topic_ecm, 1, poseCallbackECM);
+
+            std::string cp_set_topic_ecm = "/ECM/setpoint_cp";
+            cp_set_sub_ecm = nh.subscribe(cp_set_topic_ecm, 1, setpointCPCallbackECM);
+
+            lcp_sub_ecm  = nh.subscribe("/ECM/local/measured_cp", 1,  localCPCallbackECM);
+        
     }
->>>>>>> db74a70 (re-organized file structure)
 
 
+    if (g_record_cv) {
+            if (g_record_psm1)
+                cv_sub_psm1 = nh.subscribe("/PSM1/measured_cv", 1, cvCallbackPSM1);
+            if (g_record_psm2)
+                cv_sub_psm2 = nh.subscribe("/PSM2/measured_cv", 1, cvCallbackPSM2);
+    }
 
     std::cout << "------ start ROS spin in separate thread ------" << std::endl;
     std::thread ros_spin_thread([] {
         ros::spin();
         // Once spin() returns, shutdown
         std::lock_guard<std::mutex> lk(g_data_mutex);
-<<<<<<< HEAD
-=======
-    image_transport::Subscriber image_sub = it.subscribe("/test/right/image_raw", 1, imageCallback);
-
-    ros::Subscriber joint_sub = nh.subscribe("/PSM1/measured_js", 1, jointStateCallback);
-
-    std::cout << " ------ start ros spin ------" << std::endl;
-    // Spin ROS callback in a separate thread
-    std::thread ros_spin_thread([] {
-        ros::spin();
->>>>>>> 4754361 (Upload of the script )
-=======
->>>>>>> db74a70 (re-organized file structure)
         g_keep_running = false;
         g_cv.notify_all();
     });
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-
-    std::thread sync_t(syncThread);
-
-    std::thread writer_t(writerThread);
-=======
 
     std::thread sync_t(syncThread);
 
@@ -1832,7 +1744,6 @@ int main(int argc, char** argv) {
     for (int i = 0; i < NUM_WRITER_THREADS; ++i) {
         writer_threads.emplace_back(writerThread);
     }
->>>>>>> db74a70 (re-organized file structure)
 
     ros_spin_thread.join();
 
@@ -1846,39 +1757,15 @@ int main(int argc, char** argv) {
 
     // join threads
     sync_t.join();
-<<<<<<< HEAD
-    writer_t.join();
-=======
     for (auto &t : writer_threads) {
         if (t.joinable()) t.join();
     }
->>>>>>> db74a70 (re-organized file structure)
  
     cleanupFolders();
     countFoldersPerSecond();
 
     
     reformatDataStorage();
-<<<<<<< HEAD
-=======
-    std::cout << " ------ start threads ------" << std::endl;
-    std::thread sync_t(syncThread);
-    std::thread img_writer_t(imageWriterThread);
-    std::thread kin_writer_t(kinematicWriterThread);
-
-    ros_spin_thread.join();
-    g_keep_running = false;
-    g_cv.notify_all();
-
-    sync_t.join();
-    img_writer_t.join();
-    kin_writer_t.join();
-
-    // Perform cleanup after everything is done
-    cleanupFolders();
->>>>>>> 4754361 (Upload of the script )
-=======
->>>>>>> db74a70 (re-organized file structure)
 
     return 0;
 }
